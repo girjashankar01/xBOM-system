@@ -18,6 +18,7 @@ export default {
         high: '#F5943D',
         medium: '#F2C94C',
         low: '#6B93C4',
+        safe: '#3DD68C', // new: quantum-safe (PQC level 3-5) — CBOM tab only
       },
       fontFamily: {
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
