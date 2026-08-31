@@ -203,6 +203,19 @@ function SortHeader({ label, col, sortBy, sortDir, onClick }) {
 
 function AssetRow({ asset: a, isExpanded, onToggle }) {
   const lowConfidence = a.confidence === 'low'
+  const [copied, setCopied] = useState(false)
+
+  async function copyFinding(e) {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(a, null, 2))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API can be unavailable (permissions, non-HTTPS context);
+      // fail quietly rather than showing a broken "Copied!" state.
+    }
+  }
 
   return (
     <div className={lowConfidence ? 'bg-medium/[0.04]' : undefined}>
@@ -223,7 +236,15 @@ function AssetRow({ asset: a, isExpanded, onToggle }) {
 
       {isExpanded && (
         <div className="px-4 pb-4 pt-1 bg-bg/40 border-t border-border/60 animate-fade-in">
-          <p className="text-xs text-dim font-mono mb-3 break-all">{a.bomRef}</p>
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <p className="text-xs text-dim font-mono break-all">{a.bomRef}</p>
+            <button
+              onClick={copyFinding}
+              className="shrink-0 text-[11px] text-dim hover:text-muted underline underline-offset-2 whitespace-nowrap"
+            >
+              {copied ? 'Copied' : 'Copy finding as JSON'}
+            </button>
+          </div>
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
@@ -265,6 +286,22 @@ function AssetRow({ asset: a, isExpanded, onToggle }) {
               <div>
                 <p className="text-xs uppercase tracking-wide text-dim mb-1.5">Classical security</p>
                 <p className="text-sm text-muted font-mono">{a.classicalSecurityLevel}-bit</p>
+              </div>
+            )}
+
+            {a.dependsOn && a.dependsOn.length > 0 && (
+              <div className="sm:col-span-2">
+                <p className="text-xs uppercase tracking-wide text-dim mb-1.5">Used by</p>
+                <div className="flex flex-wrap gap-2">
+                  {a.dependsOn.map((ref) => (
+                    <span
+                      key={ref}
+                      className="inline-flex items-center rounded-md border border-border bg-raised px-2 py-1 text-[11px] font-mono text-muted break-all"
+                    >
+                      {ref}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
           </div>

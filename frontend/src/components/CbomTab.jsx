@@ -4,8 +4,9 @@ import QuantumRiskChart from './QuantumRiskChart'
 import CbomAssetTable from './CbomAssetTable'
 import { buildCbomSummary, enrichCryptoAsset } from '../utils/cbomTransform'
 import { MOCK_CBOM_ASSETS } from '../data/mockCbomAssets'
+import { downloadCbomJson } from '../utils/cbomExport'
 
-export default function CbomTab({ assets }) {
+export default function CbomTab({ assets, repoUrl }) {
   const [showSample, setShowSample] = useState(false)
 
   const displayAssets = useMemo(() => {
@@ -32,9 +33,11 @@ export default function CbomTab({ assets }) {
     )
   }
 
+  const isSample = assets.length === 0 && showSample
+
   return (
     <div className="flex flex-col gap-8 animate-fade-in">
-      {assets.length === 0 && showSample && (
+      {isSample && (
         <div className="rounded-md border border-accent/30 bg-accent/10 px-4 py-2.5 text-xs text-accent flex items-center justify-between">
           <span>Showing sample data — not results from an actual scan.</span>
           <button onClick={() => setShowSample(false)} className="underline underline-offset-2">
@@ -42,6 +45,19 @@ export default function CbomTab({ assets }) {
           </button>
         </div>
       )}
+
+      <div className="flex items-baseline justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-text">Cryptography findings</h2>
+          <p className="text-xs text-dim font-mono mt-0.5 truncate max-w-md">{repoUrl}</p>
+        </div>
+        <button
+          onClick={() => downloadCbomJson(displayAssets, repoUrl, isSample ? 'cbom-sample.json' : 'cbom.json')}
+          className="text-xs text-muted hover:text-text border border-border rounded-md px-3 py-1.5 transition-colors whitespace-nowrap"
+        >
+          Export CBOM (JSON)
+        </button>
+      </div>
 
       <CbomSummaryCards summary={summary} />
       <QuantumRiskChart byQuantumRisk={summary.byQuantumRisk} />
