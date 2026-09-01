@@ -36,12 +36,8 @@ const { SbomAdapter } = require('../context/sbomAdapter');
 const { scan: scanKeysCerts } = require('../scanner/keysCerts');
 const { scan: scanConstants } = require('../scanner/constants');
 
-// scanner/astExtract.js (Phase 2) doesn't exist yet — stub keeps the
-// pipeline shape stable so wiring it in later is a one-line change.
-function scanAstDetectors(/* targetDir */) {
-  console.warn('[main] scanner/astExtract.js (Phase 2, semgrep+AST) is not implemented yet — skipping.');
-  return [];
-}
+const { scan: scanAstExtract } = require('../scanner/astExtract');
+
 
 async function runVerification(findings, { corpusDir }) {
   if (!corpusDir) {
@@ -90,7 +86,17 @@ async function runPipeline(targetDir, options = {}) {
     throw new Error(`targetDir "${targetDir}" is not a directory`);
   }
 
-  const rawFindings = [...scanAstDetectors(targetDir), ...scanKeysCerts(targetDir), ...scanConstants(targetDir)];
+  // Phase 2: Semgrep/AST detector. Degrades gracefully when semgrep is not
+  // on PATH (e.g. dev environments without semgrep installed) — warns and
+  // returns [] so the rest of the pipeline still runs on Phase 2.5/3 findings.
+  let astFindings = [];
+  try {
+    astFindings = scanAstExtract(targetDir);
+  } catch (err) {
+    console.warn(`[main] scanner/astExtract.js (Phase 2) skipped — ${err.message}`);
+  }
+  const rawFindings = [...astFindings, ...scanKeysCerts(targetDir), ...scanConstants(targetDir)];
+
   classifyFindings(rawFindings); // Phase 4, before verification so llm_agent gets real context
 
   const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir });

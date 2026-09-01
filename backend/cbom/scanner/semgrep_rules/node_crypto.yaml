@@ -28,7 +28,7 @@ rules:
     message: "Node crypto symmetric/AE cipher instantiation via createCipheriv"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-source: $ALG
 
   - id: node-crypto-createdecipheriv
@@ -41,7 +41,7 @@ rules:
     message: "Node crypto symmetric/AE decipher instantiation via createDecipheriv"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-source: $ALG
 
   - id: node-crypto-createcipher-legacy
@@ -54,7 +54,7 @@ rules:
     message: "Deprecated Node crypto.createCipher/createDecipher — no explicit IV, key derived from a hash of the password. Flag as a weak/legacy pattern regardless of algorithm."
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-source: $ALG
       cbom-deprecated-api: "true"
 
@@ -117,7 +117,7 @@ rules:
     message: "Node crypto asymmetric keypair generation"
     metadata:
       cbom-asset-type: related-crypto-material
-      cbom-primitive: asymmetric
+      cbom-primitive: pke
       cbom-material-type: private-key
       cbom-algorithm-source: $TYPE
 
@@ -132,7 +132,7 @@ rules:
     message: "Node crypto Diffie-Hellman key agreement"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: key-agreement
+      cbom-primitive: key-agree
       cbom-algorithm-family: DH
 
   - id: node-crypto-createecdh
@@ -143,7 +143,7 @@ rules:
     message: "Node crypto ECDH key agreement"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: key-agreement
+      cbom-primitive: key-agree
       cbom-algorithm-family: ECDH
       cbom-algorithm-source: $CURVE
 

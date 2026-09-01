@@ -23,7 +23,7 @@ rules:
     message: "CryptoJS AES usage"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-family: AES
 
   - id: cryptojs-des-encrypt
@@ -36,7 +36,7 @@ rules:
     message: "CryptoJS DES usage — broken cipher, flag regardless of context"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-family: DES
 
   - id: cryptojs-tripledes-encrypt
@@ -49,7 +49,7 @@ rules:
     message: "CryptoJS 3DES usage"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-family: 3DES
 
   - id: cryptojs-rc4-encrypt
@@ -63,7 +63,7 @@ rules:
     message: "CryptoJS RC4 usage — broken stream cipher, flag regardless of context"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: stream-cipher
       cbom-algorithm-family: RC4
 
   - id: cryptojs-rabbit-encrypt
@@ -76,7 +76,7 @@ rules:
     message: "CryptoJS Rabbit stream cipher usage"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: stream-cipher
       cbom-algorithm-family: Rabbit
 
   # --- hashes (one rule per digest — see file header) ---

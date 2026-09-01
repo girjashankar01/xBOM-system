@@ -10,7 +10,7 @@ rules:
     message: "node-forge symmetric cipher instantiation"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-algorithm-source: $ALG
 
   # one rule per digest (see crypto_js.yaml header for why combined
@@ -80,7 +80,7 @@ rules:
     message: "node-forge RSA keypair generation"
     metadata:
       cbom-asset-type: related-crypto-material
-      cbom-primitive: asymmetric
+      cbom-primitive: pke
       cbom-algorithm-family: RSA
       cbom-material-type: private-key
 

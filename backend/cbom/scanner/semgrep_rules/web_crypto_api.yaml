@@ -27,7 +27,7 @@ rules:
     message: "Web Crypto API key generation"
     metadata:
       cbom-asset-type: related-crypto-material
-      cbom-primitive: symmetric
+      cbom-primitive: block-cipher
       cbom-material-type: secret-key
       cbom-algorithm-source: $ALG
 

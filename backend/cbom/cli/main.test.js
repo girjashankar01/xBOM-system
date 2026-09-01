@@ -1,5 +1,9 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
+// cbom/cli/main.test.js
+//
+// End-to-end pipeline integration tests using Jest (the project's declared test
+// runner in package.json). Equivalent assertions to the original node:test
+// version — same fixture, same checks, same coverage.
+
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -25,29 +29,31 @@ function makeFixtureDir() {
   return dir;
 }
 
-test('runPipeline detects a known-constant hash match and a PEM private key', async () => {
-  const dir = makeFixtureDir();
-  try {
-    const result = await runPipeline(dir, { skipLlm: true }); // no corpus set up yet
+describe('runPipeline', () => {
+  test('detects a known-constant hash match and a PEM private key', async () => {
+    const dir = makeFixtureDir();
+    try {
+      const result = await runPipeline(dir, { skipLlm: true }); // no corpus
 
-    assert.ok(result.findings.length >= 2, `expected >=2 findings, got ${result.findings.length}`);
-    assert.equal(result.validation.errors.length, 0, 'validator should not reject either fixture finding');
+      expect(result.findings.length).toBeGreaterThanOrEqual(2);
+      expect(result.validation.errors.length).toBe(0);
 
-    const md5Finding = result.findings.find((f) => f.algorithmFamily === 'MD5');
-    assert.ok(md5Finding, 'expected an MD5 finding from the known-constant match');
-    assert.ok(['HIGH', 'CRITICAL'].includes(md5Finding.quantumRisk), `MD5 should be HIGH or CRITICAL, got ${md5Finding.quantumRisk}`);
+      const md5Finding = result.findings.find((f) => f.algorithmFamily === 'MD5');
+      expect(md5Finding).toBeDefined();
+      expect(['HIGH', 'CRITICAL']).toContain(md5Finding.quantumRisk);
 
-    const keyFinding = result.findings.find((f) => f.materialType === 'private-key');
-    assert.ok(keyFinding, 'expected a private-key finding from the PEM matcher');
+      const keyFinding = result.findings.find((f) => f.materialType === 'private-key');
+      expect(keyFinding).toBeDefined();
 
-    assert.equal(result.cbom.bomFormat, 'CycloneDX');
-    assert.equal(result.cbom.components.length, result.findings.length);
-    assert.ok(result.cbom.components.every((c) => c.type === 'cryptographic-asset'));
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
+      expect(result.cbom.bomFormat).toBe('CycloneDX');
+      expect(result.cbom.components.length).toBe(result.findings.length);
+      expect(result.cbom.components.every((c) => c.type === 'cryptographic-asset')).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-test('runPipeline rejects a non-existent target directory', async () => {
-  await assert.rejects(() => runPipeline('/definitely/not/a/real/path'), /not a directory/);
+  test('rejects a non-existent target directory', async () => {
+    await expect(runPipeline('/definitely/not/a/real/path')).rejects.toThrow(/not a directory/);
+  });
 });

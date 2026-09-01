@@ -36,7 +36,7 @@ rules:
     message: "elliptic library EC curve instantiation"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: asymmetric
+      cbom-primitive: signature
       cbom-algorithm-family: ECDSA
       cbom-algorithm-source: $CURVE
 
@@ -78,7 +78,7 @@ rules:
     message: "@noble/curves X25519 key agreement"
     metadata:
       cbom-asset-type: algorithm
-      cbom-primitive: key-agreement
+      cbom-primitive: key-agree
       cbom-algorithm-family: X25519
 
   - id: node-rsa-instantiate
@@ -91,7 +91,7 @@ rules:
     message: "node-rsa keypair instantiation"
     metadata:
       cbom-asset-type: related-crypto-material
-      cbom-primitive: asymmetric
+      cbom-primitive: pke
       cbom-algorithm-family: RSA
       cbom-material-type: private-key
 

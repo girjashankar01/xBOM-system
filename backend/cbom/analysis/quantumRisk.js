@@ -77,13 +77,6 @@ function bucketBySize(size, table) {
 function nistQuantumLevelFor(finding) {
   const family = (finding.algorithmFamily || finding.name || '').toUpperCase();
 
-  // was: finding.primitive === Primitive.SYMMETRIC || finding.primitive === Primitive.AE
-if (finding.primitive === Primitive.BLOCK_CIPHER || finding.primitive === Primitive.STREAM_CIPHER || finding.primitive === Primitive.AE) {
-
-// was: Primitive.ASYMMETRIC || Primitive.SIGNATURE || Primitive.KEY_AGREEMENT
-finding.primitive === Primitive.PKE || finding.primitive === Primitive.SIGNATURE ||
-finding.primitive === Primitive.KEY_AGREE || finding.primitive === Primitive.KEM
-
   if (
     (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL || finding.assetType === AssetType.CERTIFICATE) &&
     finding.parameterSet && /rsa|ec|dsa/i.test(finding.parameterSet)
@@ -96,7 +89,7 @@ finding.primitive === Primitive.KEY_AGREE || finding.primitive === Primitive.KEM
   if (SHOR_BROKEN_FAMILIES.has(family)) return NistQuantumLevel.L0_BROKEN;
   if (CLASSICALLY_BROKEN_FAMILIES.has(family)) return NistQuantumLevel.L0_BROKEN;
 
-  if (finding.primitive === Primitive.SYMMETRIC || finding.primitive === Primitive.AE) {
+  if (finding.primitive === Primitive.BLOCK_CIPHER || finding.primitive === Primitive.STREAM_CIPHER || finding.primitive === Primitive.AE) {
     return bucketBySize(keySizeOf(finding), SYMMETRIC_QUANTUM_LEVEL_BY_KEYSIZE);
   }
   if (finding.primitive === Primitive.HASH || finding.primitive === Primitive.MAC) {
@@ -123,9 +116,10 @@ function inferDataSensitivity(finding) {
   if (finding.contextCategory === 'test' || finding.contextCategory === 'vendor') return 'low';
   if (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL || finding.assetType === AssetType.CERTIFICATE) return 'high';
   if (
-    finding.primitive === Primitive.ASYMMETRIC ||
+    finding.primitive === Primitive.PKE ||
+    finding.primitive === Primitive.KEM ||
     finding.primitive === Primitive.SIGNATURE ||
-    finding.primitive === Primitive.KEY_AGREEMENT
+    finding.primitive === Primitive.KEY_AGREE
   ) {
     return 'high';
   }
