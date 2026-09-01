@@ -1,0 +1,15 @@
+{
+  "$comment": "Vendored subset of the CycloneDX Cryptography Registry (CycloneDX v1.7). Fetched live from CycloneDX/specification schema/cryptography-defs.schema.json (definitions.algorithmFamiliesEnum) and cross-checked against cyclonedx-python-library's primitive enum docs, which mirror the same bom-1.7 cryptoPropertiesType.algorithmProperties.primitive definition. Not hand-typed. ellipticCurves intentionally omitted — nothing in core/models.js captures a curve field yet, so there's no consumer for the ~250-entry curve enum; add it if/when a detector starts populating one.",
+  "source": "https://github.com/CycloneDX/specification/blob/master/schema/cryptography-defs.schema.json",
+  "specVersion": "1.7",
+  "registryLastUpdated": "2026-03-05T14:27:50Z",
+  "fetchedOn": "2026-09-01",
+  "primitives": [
+    "ae", "block-cipher", "combiner", "drbg", "hash", "kdf", "kem",
+    "key-agree", "mac", "pke", "signature", "stream-cipher", "xof",
+    "other", "unknown"
+  ],
+  "algorithmFamilies": [
+    "3DES","3GPP-XOR","A5/1","A5/2","AES","ARIA","Argon2","Ascon","BLAKE2","BLAKE3","BLS","Blowfish","CAMELLIA","CAST5","CAST6","CMAC","CMEA","CTR_DRBG","ChaCha","ChaCha20","DES","DSA","ECDH","ECDSA","ECIES","EdDSA","ElGamal","FFDH","Fortuna","GOST","HC","HKDF","HMAC","HMAC_DRBG","HPKE","Hash_DRBG","IDEA","IKE-PRF","J-PAKE","LMS","MD2","MD4","MD5","MILENAGE","ML-DSA","ML-KEM","MQV","OPAQUE","PBES1","PBES2","PBKDF1","PBKDF2","PBMAC1","Poly1305","RABBIT","RC2","RC4","RC5","RC6","RIPEMD","RSAES-OAEP","RSAES-PKCS1","RSASSA-PKCS1","RSASSA-PSS","SEED","SHA-1","SHA-2","SHA-3","SLH-DSA","SM2","SM3","SM4","SM9","SNOW3G","SP800-108","SPAKE2","SPAKE2PLUS","SRP","Salsa20","Serpent","SipHash","Skipjack","TUAK","Twofish","UMAC","Whirlpool","X3DH","XMSS","Yarrow","ZUC","bcrypt","scrypt","yescrypt"
+  ]
+}

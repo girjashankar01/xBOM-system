@@ -1,0 +1,95 @@
+# scanner/semgrep_rules/node_forge.yaml
+rules:
+  - id: forge-cipher
+    patterns:
+      - pattern-either:
+          - pattern: forge.cipher.createCipher($ALG, $KEY)
+          - pattern: forge.cipher.createDecipher($ALG, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge symmetric cipher instantiation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-source: $ALG
+
+  # one rule per digest (see crypto_js.yaml header for why combined
+  # pattern-either rules can't report which alternative matched)
+  - id: forge-md-sha256
+    patterns:
+      - pattern: forge.md.sha256.create()
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge SHA-256 digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-256
+
+  - id: forge-md-sha1
+    patterns:
+      - pattern: forge.md.sha1.create()
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "node-forge SHA-1 digest — NIST-broken hash"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-1
+
+  - id: forge-md-sha384
+    patterns:
+      - pattern: forge.md.sha384.create()
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge SHA-384 digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-384
+
+  - id: forge-md-sha512
+    patterns:
+      - pattern: forge.md.sha512.create()
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge SHA-512 digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-512
+
+  - id: forge-md-md5
+    patterns:
+      - pattern: forge.md.md5.create()
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "node-forge MD5 digest — broken hash"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: MD5
+
+  - id: forge-rsa-generate-keypair
+    patterns:
+      - pattern-either:
+          - pattern: forge.pki.rsa.generateKeyPair($OPTS)
+          - pattern: forge.pki.rsa.generateKeyPair($BITS, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge RSA keypair generation"
+    metadata:
+      cbom-asset-type: related-crypto-material
+      cbom-primitive: asymmetric
+      cbom-algorithm-family: RSA
+      cbom-material-type: private-key
+
+  - id: forge-create-certificate
+    patterns:
+      - pattern: forge.pki.createCertificate()
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-forge X.509 certificate creation"
+    metadata:
+      cbom-asset-type: certificate
+      cbom-algorithm-family: X.509

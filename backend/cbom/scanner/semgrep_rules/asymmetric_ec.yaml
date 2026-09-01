@@ -1,0 +1,109 @@
+# scanner/semgrep_rules/asymmetric_ec.yaml
+rules:
+  - id: tweetnacl-box
+    patterns:
+      - pattern-either:
+          - pattern: nacl.box($MSG, $NONCE, $PUBKEY, $SECRETKEY)
+          - pattern: nacl.box.keyPair()
+          - pattern: nacl.secretbox($MSG, $NONCE, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "tweetnacl box/secretbox (XSalsa20-Poly1305 authenticated encryption)"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: ae
+      cbom-algorithm-family: XSalsa20-Poly1305
+
+  - id: tweetnacl-sign
+    patterns:
+      - pattern-either:
+          - pattern: nacl.sign($MSG, $SECRETKEY)
+          - pattern: nacl.sign.keyPair()
+          - pattern: nacl.sign.detached($MSG, $SECRETKEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "tweetnacl Ed25519 signing"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: Ed25519
+
+  - id: elliptic-ec-instantiate
+    patterns:
+      - pattern: new EC($CURVE)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "elliptic library EC curve instantiation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: asymmetric
+      cbom-algorithm-family: ECDSA
+      cbom-algorithm-source: $CURVE
+
+  # one rule per curve/operation — see crypto_js.yaml header for why a
+  # combined pattern-either rule can't deterministically report which
+  # curve matched (@noble/curves exposes ed25519/secp256k1/x25519 as
+  # separate module namespaces, not a single call with a curve argument)
+  - id: noble-ed25519-sign
+    patterns:
+      - pattern-either:
+          - pattern: ed25519.sign($MSG, $PRIVKEY)
+          - pattern: ed25519.getPublicKey($PRIVKEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "@noble/curves Ed25519 operation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: Ed25519
+
+  - id: noble-secp256k1-sign
+    patterns:
+      - pattern-either:
+          - pattern: secp256k1.sign($MSG, $PRIVKEY)
+          - pattern: secp256k1.getPublicKey($PRIVKEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "@noble/curves secp256k1 operation — common in Web3/wallet code"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: secp256k1
+
+  - id: noble-x25519-derive
+    patterns:
+      - pattern: x25519.getSharedSecret($PRIVKEY, $PUBKEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "@noble/curves X25519 key agreement"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: key-agreement
+      cbom-algorithm-family: X25519
+
+  - id: node-rsa-instantiate
+    patterns:
+      - pattern-either:
+          - pattern: new NodeRSA($OPTS)
+          - pattern: new NodeRSA().generateKeyPair($BITS)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "node-rsa keypair instantiation"
+    metadata:
+      cbom-asset-type: related-crypto-material
+      cbom-primitive: asymmetric
+      cbom-algorithm-family: RSA
+      cbom-material-type: private-key
+
+  - id: secp256k1-native-sign
+    patterns:
+      - pattern-either:
+          - pattern: secp256k1.ecdsaSign($MSG, $PRIVKEY)
+          - pattern: secp256k1.sign($MSG, $PRIVKEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "secp256k1 native binding signing — common in Web3/blockchain code"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: secp256k1-ECDSA

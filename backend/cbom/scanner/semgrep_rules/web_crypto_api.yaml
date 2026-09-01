@@ -1,0 +1,85 @@
+# scanner/semgrep_rules/web_crypto_api.yaml
+# Covers both browser `window.crypto.subtle` and Node's `crypto.webcrypto.subtle` /
+# @peculiar/webcrypto, which share the same algorithmIdentifier call shape.
+
+rules:
+  - id: webcrypto-digest
+    patterns:
+      - pattern-either:
+          - pattern: crypto.subtle.digest($ALG, $DATA)
+          - pattern: window.crypto.subtle.digest($ALG, $DATA)
+          - pattern: subtle.digest($ALG, $DATA)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-source: $ALG
+
+  - id: webcrypto-generatekey
+    patterns:
+      - pattern-either:
+          - pattern: crypto.subtle.generateKey($ALG, $EXTRACTABLE, $USAGES)
+          - pattern: subtle.generateKey($ALG, $EXTRACTABLE, $USAGES)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API key generation"
+    metadata:
+      cbom-asset-type: related-crypto-material
+      cbom-primitive: symmetric
+      cbom-material-type: secret-key
+      cbom-algorithm-source: $ALG
+
+  - id: webcrypto-encrypt-decrypt
+    patterns:
+      - pattern-either:
+          - pattern: crypto.subtle.encrypt($ALG, $KEY, $DATA)
+          - pattern: crypto.subtle.decrypt($ALG, $KEY, $DATA)
+          - pattern: subtle.encrypt($ALG, $KEY, $DATA)
+          - pattern: subtle.decrypt($ALG, $KEY, $DATA)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API encrypt/decrypt"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: ae
+      cbom-algorithm-source: $ALG
+
+  - id: webcrypto-sign-verify
+    patterns:
+      - pattern-either:
+          - pattern: crypto.subtle.sign($ALG, $KEY, $DATA)
+          - pattern: crypto.subtle.verify($ALG, $KEY, $SIG, $DATA)
+          - pattern: subtle.sign($ALG, $KEY, $DATA)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API sign/verify"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-source: $ALG
+
+  - id: webcrypto-derive
+    patterns:
+      - pattern-either:
+          - pattern: crypto.subtle.deriveKey($ALG, $BASEKEY, $DERIVEDPARAMS, ...)
+          - pattern: crypto.subtle.deriveBits($ALG, $BASEKEY, $LEN)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API key derivation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: kdf
+      cbom-algorithm-source: $ALG
+
+  - id: webcrypto-importkey
+    patterns:
+      - pattern: crypto.subtle.importKey($FORMAT, $KEYDATA, $ALG, $EXTRACTABLE, $USAGES)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Web Crypto API key import — confirms external key material is being loaded, useful SBOM correlation signal"
+    metadata:
+      cbom-asset-type: related-crypto-material
+      cbom-material-type: secret-key
+      cbom-algorithm-source: $ALG

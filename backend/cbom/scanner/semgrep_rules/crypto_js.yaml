@@ -1,0 +1,243 @@
+# scanner/semgrep_rules/crypto_js.yaml
+#
+# One rule per concrete algorithm — NOT combined via pattern-either with a
+# single check_id — because astExtract.js identifies the algorithm from
+# `cbom-algorithm-family` in rule metadata, and Semgrep does not expose
+# "which pattern-either alternative matched" as a bindable value. A
+# combined rule would make every hash function report as the same
+# unresolved family. Verbose, but this is what actually keeps extraction
+# deterministic instead of silently collapsing distinct algorithms.
+#
+# crypto-js is also common in tutorial/demo code — lean on Phase 4 context
+# classification (test/vendor) more than most other rule files here.
+
+rules:
+  # --- symmetric ciphers ---
+  - id: cryptojs-aes-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: CryptoJS.AES.encrypt(...)
+          - pattern: CryptoJS.AES.decrypt(...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS AES usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-family: AES
+
+  - id: cryptojs-des-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: CryptoJS.DES.encrypt(...)
+          - pattern: CryptoJS.DES.decrypt(...)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS DES usage — broken cipher, flag regardless of context"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-family: DES
+
+  - id: cryptojs-tripledes-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: CryptoJS.TripleDES.encrypt(...)
+          - pattern: CryptoJS.TripleDES.decrypt(...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS 3DES usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-family: 3DES
+
+  - id: cryptojs-rc4-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: CryptoJS.RC4.encrypt(...)
+          - pattern: CryptoJS.RC4.decrypt(...)
+          - pattern: CryptoJS.RC4Drop.encrypt(...)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS RC4 usage — broken stream cipher, flag regardless of context"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-family: RC4
+
+  - id: cryptojs-rabbit-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: CryptoJS.Rabbit.encrypt(...)
+          - pattern: CryptoJS.RabbitLegacy.encrypt(...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS Rabbit stream cipher usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: symmetric
+      cbom-algorithm-family: Rabbit
+
+  # --- hashes (one rule per digest — see file header) ---
+  - id: cryptojs-sha1
+    patterns:
+      - pattern: CryptoJS.SHA1($MSG)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS SHA-1 usage — NIST-broken hash"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-1
+
+  - id: cryptojs-sha224
+    patterns:
+      - pattern: CryptoJS.SHA224($MSG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS SHA-224 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-224
+
+  - id: cryptojs-sha256
+    patterns:
+      - pattern: CryptoJS.SHA256($MSG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS SHA-256 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-256
+
+  - id: cryptojs-sha384
+    patterns:
+      - pattern: CryptoJS.SHA384($MSG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS SHA-384 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-384
+
+  - id: cryptojs-sha512
+    patterns:
+      - pattern: CryptoJS.SHA512($MSG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS SHA-512 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-512
+
+  - id: cryptojs-sha3
+    patterns:
+      - pattern: CryptoJS.SHA3($MSG, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS SHA-3 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: SHA-3
+
+  - id: cryptojs-md5
+    patterns:
+      - pattern: CryptoJS.MD5($MSG)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS MD5 usage — broken hash"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: MD5
+
+  - id: cryptojs-ripemd160
+    patterns:
+      - pattern: CryptoJS.RIPEMD160($MSG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS RIPEMD-160 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-family: RIPEMD-160
+
+  # --- HMAC (family is always HMAC; cbom-mode carries the underlying
+  #     digest, reusing the SAME metadata key astExtract.js already reads
+  #     as a fixed fallback for meta['cbom-mode'] — no astExtract change needed) ---
+  - id: cryptojs-hmac-sha1
+    patterns:
+      - pattern: CryptoJS.HmacSHA1($MSG, $KEY)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS HMAC-SHA1 usage — weak underlying digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-mode: SHA-1
+
+  - id: cryptojs-hmac-sha256
+    patterns:
+      - pattern: CryptoJS.HmacSHA256($MSG, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS HMAC-SHA256 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-mode: SHA-256
+
+  - id: cryptojs-hmac-sha384
+    patterns:
+      - pattern: CryptoJS.HmacSHA384($MSG, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS HMAC-SHA384 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-mode: SHA-384
+
+  - id: cryptojs-hmac-sha512
+    patterns:
+      - pattern: CryptoJS.HmacSHA512($MSG, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS HMAC-SHA512 usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-mode: SHA-512
+
+  - id: cryptojs-hmac-md5
+    patterns:
+      - pattern: CryptoJS.HmacMD5($MSG, $KEY)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "CryptoJS HMAC-MD5 usage — weak underlying digest"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-mode: MD5
+
+  - id: cryptojs-pbkdf2
+    patterns:
+      - pattern: CryptoJS.PBKDF2($PW, $SALT, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "CryptoJS PBKDF2 key derivation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: kdf
+      cbom-algorithm-family: PBKDF2

@@ -1,0 +1,85 @@
+# scanner/semgrep_rules/jwt_jose.yaml
+rules:
+  - id: jsonwebtoken-sign
+    patterns:
+      - pattern-either:
+          - pattern: "jwt.sign($PAYLOAD, $SECRET, { algorithm: $ALG, ... })"
+          - pattern: jwt.sign($PAYLOAD, $SECRET, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "jsonwebtoken signing — HS*/RS*/ES*/PS* per algorithm option (defaults to HS256 if omitted, which astExtract.js should treat as the fallback when $ALG is absent)"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: JWT
+      cbom-algorithm-source: $ALG
+      cbom-algorithm-default-if-missing: HS256
+
+  - id: jsonwebtoken-verify
+    patterns:
+      - pattern-either:
+          - pattern: "jwt.verify($TOKEN, $SECRET, { algorithms: $ALGS, ... })"
+          - pattern: jwt.verify($TOKEN, $SECRET, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "jsonwebtoken verification"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: JWT
+      cbom-algorithm-source: $ALGS
+
+  - id: jsonwebtoken-verify-alg-none-risk
+    patterns:
+      - pattern-either:
+          - pattern: jwt.verify($TOKEN, $SECRET)
+          - pattern: jwt.decode($TOKEN, ...)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "jwt.verify called without an explicit algorithms allow-list, or jwt.decode used where verify was likely intended — flag for manual review, not just a crypto inventory item"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: JWT
+      cbom-review-flag: "true"
+
+  - id: jose-signjwt
+    patterns:
+      - pattern-either:
+          - pattern: "new SignJWT($PAYLOAD).setProtectedHeader({ alg: $ALG, ... })"
+          - pattern: "new jose.SignJWT($PAYLOAD).setProtectedHeader({ alg: $ALG, ... })"
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "jose SignJWT usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: JWT
+      cbom-algorithm-source: $ALG
+
+  - id: jose-jwtverify
+    patterns:
+      - pattern-either:
+          - pattern: jwtVerify($TOKEN, $KEY, ...)
+          - pattern: jose.jwtVerify($TOKEN, $KEY, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "jose JWT verification"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-family: JWT
+
+  - id: jose-compact-encrypt
+    patterns:
+      - pattern-either:
+          - pattern: "new CompactEncrypt($DATA).setProtectedHeader({ alg: $ALG, enc: $ENC, ... })"
+          - pattern: "new jose.CompactEncrypt($DATA).setProtectedHeader({ alg: $ALG, enc: $ENC, ... })"
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "jose JWE (JSON Web Encryption) usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: ae
+      cbom-algorithm-family: JWE
+      cbom-algorithm-source: $ENC

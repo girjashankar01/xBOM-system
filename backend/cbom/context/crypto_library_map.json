@@ -1,0 +1,447 @@
+{
+  "_meta": {
+    "purpose": "Library -> known crypto capability context table. Consumed by context/sbomAdapter.js to enrich CryptoFinding evidence with SCA context. This table NEVER generates a finding by itself — presence of a crypto-capable library in the dependency tree is at most SUPPORTING evidence (see core/models.js EvidenceClass). A repo can depend on node-forge and never call it.",
+    "primitiveValues": ["symmetric", "hash", "mac", "asymmetric", "kdf", "ae", "signature", "key-agreement", "drbg"],
+    "schemaPerEntry": {
+      "ecosystem": "npm",
+      "cryptoCapable": "boolean — false entries are documented false-positive traps, kept for classifier context",
+      "primitives": "string[] — subset of primitiveValues above",
+      "algorithmFamilies": "string[] — human-readable families this library implements, not necessarily registry-exact",
+      "notes": "string — why it's here / caveats"
+    }
+  },
+
+  "crypto": {
+    "ecosystem": "npm", "cryptoCapable": true, "builtin": true,
+    "primitives": ["symmetric", "hash", "mac", "asymmetric", "kdf", "ae", "signature", "key-agreement", "drbg"],
+    "algorithmFamilies": ["AES", "DES", "3DES", "ChaCha20-Poly1305", "RSA", "EC", "DH", "SHA", "MD5", "HMAC", "PBKDF2", "scrypt", "HKDF"],
+    "notes": "Node.js built-in module. Highest-value target for scanner/semgrep_rules — covers createCipheriv, createHash, createHmac, createSign/Verify, generateKeyPair(Sync), diffieHellman, pbkdf2, scrypt, randomBytes."
+  },
+  "node:crypto": {
+    "ecosystem": "npm", "cryptoCapable": true, "builtin": true,
+    "primitives": ["symmetric", "hash", "mac", "asymmetric", "kdf", "ae", "signature", "key-agreement", "drbg"],
+    "algorithmFamilies": ["AES", "DES", "3DES", "ChaCha20-Poly1305", "RSA", "EC", "DH", "SHA", "MD5", "HMAC", "PBKDF2", "scrypt", "HKDF"],
+    "notes": "Alias for 'crypto' under the node: specifier scheme."
+  },
+  "tls": {
+    "ecosystem": "npm", "cryptoCapable": true, "builtin": true,
+    "primitives": ["asymmetric", "symmetric", "mac"],
+    "algorithmFamilies": ["TLS"],
+    "notes": "Built-in TLS. Protocol-level asset (AssetType.PROTOCOL), not an algorithm finding by itself."
+  },
+  "https": {
+    "ecosystem": "npm", "cryptoCapable": true, "builtin": true,
+    "primitives": ["asymmetric", "symmetric"],
+    "algorithmFamilies": ["TLS"],
+    "notes": "Built-in, wraps tls. Weak signal alone — nearly every server imports https; only useful combined with explicit cert/cipher config."
+  },
+
+  "crypto-js": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "hash", "mac", "kdf"],
+    "algorithmFamilies": ["AES", "DES", "3DES", "RC4", "Rabbit", "SHA-1", "SHA-256", "SHA-512", "SHA-3", "MD5", "HMAC", "PBKDF2"],
+    "notes": "Very common browser/Node symmetric+hash library. High false-positive risk for demo repos copying CryptoJS tutorial snippets — treat as supporting context, not a strong prior."
+  },
+  "node-forge": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "symmetric", "hash", "signature", "kdf"],
+    "algorithmFamilies": ["RSA", "AES", "DES", "3DES", "SHA", "MD5", "PKCS#7", "PKCS#12", "X.509"],
+    "notes": "General-purpose pure-JS crypto + PKI (cert generation/parsing). Strong signal when combined with X.509/PKCS calls."
+  },
+  "tweetnacl": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature", "key-agreement", "symmetric", "ae"],
+    "algorithmFamilies": ["Curve25519", "Ed25519", "XSalsa20-Poly1305"],
+    "notes": "Minimal NaCl port. tweetnacl-util is a companion encoding helper, not crypto-capable itself."
+  },
+  "tweetnacl-util": {
+    "ecosystem": "npm", "cryptoCapable": false,
+    "primitives": [],
+    "algorithmFamilies": [],
+    "notes": "Base64/UTF8 encoding helper for tweetnacl. False-positive trap: often imported alongside real crypto, contains no crypto itself."
+  },
+  "libsodium-wrappers": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "hash", "kdf", "signature", "key-agreement", "ae"],
+    "algorithmFamilies": ["XChaCha20-Poly1305", "Ed25519", "X25519", "Argon2", "BLAKE2b"],
+    "notes": "libsodium WASM bindings. Broad coverage — one of the strongest single-library signals available."
+  },
+  "sodium-native": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "hash", "kdf", "signature", "key-agreement", "ae"],
+    "algorithmFamilies": ["XChaCha20-Poly1305", "Ed25519", "X25519", "Argon2", "BLAKE2b"],
+    "notes": "Native libsodium bindings, same capability surface as libsodium-wrappers."
+  },
+  "jsonwebtoken": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac", "signature", "asymmetric"],
+    "algorithmFamilies": ["HMAC", "RSA", "ECDSA", "JWT"],
+    "notes": "JWT sign/verify — HS256/384/512 (mac) or RS/ES/PS (asymmetric signature). alg is usually a literal string argument, good deterministic-extraction target for semgrep."
+  },
+  "jose": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "kdf", "signature", "ae"],
+    "algorithmFamilies": ["JWT", "JWE", "JWS", "AES", "RSA", "ECDSA", "EdDSA"],
+    "notes": "Modern JOSE implementation (JWS/JWE/JWK), broader than jsonwebtoken."
+  },
+  "jwa": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac", "signature", "asymmetric"],
+    "algorithmFamilies": ["HMAC", "RSA", "ECDSA"],
+    "notes": "Low-level JWA algorithm implementations, usually a transitive dep of jsonwebtoken/jws."
+  },
+  "node-jose": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "signature", "ae"],
+    "algorithmFamilies": ["JWT", "JWE", "JWS", "AES", "RSA", "EC"],
+    "notes": "Alternative JOSE implementation."
+  },
+  "jwk-to-pem": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA", "EC"],
+    "notes": "Key-format conversion utility, not a primary detector target but confirms asymmetric key material handling."
+  },
+  "pem": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA", "X.509"],
+    "notes": "Wraps openssl CLI for cert/key generation. Shells out — flag for AssetType.CERTIFICATE / RELATED_CRYPTO_MATERIAL context."
+  },
+  "node-rsa": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "Pure-JS RSA implementation."
+  },
+  "ursa": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "Deprecated native RSA bindings — flag with elevated priority if seen (unmaintained, higher migration urgency)."
+  },
+  "elliptic": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature", "key-agreement"],
+    "algorithmFamilies": ["ECDSA", "ECDH", "EdDSA"],
+    "notes": "Pure-JS elliptic curve library. Very common transitive dep (bitcoinjs-lib, ethers.js, secp256k1)."
+  },
+  "bcrypt": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["bcrypt"],
+    "notes": "Native bcrypt bindings for password hashing."
+  },
+  "bcryptjs": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["bcrypt"],
+    "notes": "Pure-JS bcrypt, no native build step."
+  },
+  "argon2": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["Argon2"],
+    "notes": "Native Argon2 bindings — current OWASP-recommended password KDF, useful positive signal for good practice in reports."
+  },
+  "scrypt-js": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["scrypt"],
+    "notes": "Pure-JS scrypt."
+  },
+  "scrypt": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["scrypt"],
+    "notes": "Native scrypt bindings."
+  },
+  "pbkdf2": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["PBKDF2"],
+    "notes": "Standalone PBKDF2, part of the crypto-browserify family."
+  },
+  "hash.js": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-1", "SHA-256", "SHA-512", "RIPEMD-160"],
+    "notes": "Pure-JS hash implementations, common transitive dep."
+  },
+  "sha.js": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-1", "SHA-256", "SHA-512"],
+    "notes": "Part of crypto-browserify."
+  },
+  "sha1": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-1"],
+    "notes": "Single-purpose SHA-1 — flag NIST level 0 (broken) if used for anything security-relevant."
+  },
+  "sha3": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-3", "Keccak"],
+    "notes": "SHA-3/Keccak — note Keccak (pre-standardization) vs SHA-3 (final) parameter differences matter for correctness, not just for this table."
+  },
+  "js-sha256": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-256"],
+    "notes": "Lightweight SHA-256."
+  },
+  "js-sha3": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA-3", "Keccak"],
+    "notes": "Lightweight SHA-3/Keccak, common in Web3 projects for Ethereum-style Keccak-256."
+  },
+  "md5": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["MD5"],
+    "notes": "Broken hash — always NIST level 0 / flag as weak regardless of context."
+  },
+  "blakejs": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["BLAKE2"],
+    "notes": "BLAKE2b/BLAKE2s."
+  },
+  "@noble/hashes": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash", "mac", "kdf"],
+    "algorithmFamilies": ["SHA-2", "SHA-3", "BLAKE2", "BLAKE3", "HMAC", "PBKDF2", "scrypt", "HKDF"],
+    "notes": "Audited pure-JS hash suite, increasingly the modern default over crypto-js."
+  },
+  "@noble/curves": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature", "key-agreement"],
+    "algorithmFamilies": ["secp256k1", "Ed25519", "X25519", "P-256"],
+    "notes": "Audited elliptic curve suite, common in modern Web3/wallet code replacing elliptic."
+  },
+  "@noble/ciphers": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "ae"],
+    "algorithmFamilies": ["AES", "ChaCha20-Poly1305"],
+    "notes": "Audited pure-JS symmetric ciphers."
+  },
+  "crypto-browserify": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "hash", "mac", "asymmetric", "kdf", "drbg"],
+    "algorithmFamilies": ["AES", "RSA", "DH", "SHA", "MD5", "HMAC", "PBKDF2"],
+    "notes": "Browserify shim reproducing Node's crypto API surface — umbrella package pulling in browserify-aes, browserify-rsa, etc."
+  },
+  "browserify-aes": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric"],
+    "algorithmFamilies": ["AES"],
+    "notes": "Sub-dependency of crypto-browserify."
+  },
+  "browserify-rsa": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "Sub-dependency of crypto-browserify."
+  },
+  "browserify-sign": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["signature"],
+    "algorithmFamilies": ["RSA", "ECDSA", "DSA"],
+    "notes": "Sub-dependency of crypto-browserify."
+  },
+  "browserify-cipher": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric"],
+    "algorithmFamilies": ["AES", "DES", "3DES"],
+    "notes": "Sub-dependency of crypto-browserify."
+  },
+  "public-encrypt": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "RSA public-key encrypt/decrypt, part of crypto-browserify family."
+  },
+  "diffie-hellman": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["key-agreement"],
+    "algorithmFamilies": ["DH"],
+    "notes": "Standalone DH, part of crypto-browserify family."
+  },
+  "create-ecdh": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["key-agreement"],
+    "algorithmFamilies": ["ECDH"],
+    "notes": "Standalone ECDH, part of crypto-browserify family."
+  },
+  "create-hash": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash"],
+    "algorithmFamilies": ["SHA", "MD5", "RIPEMD-160"],
+    "notes": "Part of crypto-browserify family."
+  },
+  "create-hmac": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac"],
+    "algorithmFamilies": ["HMAC"],
+    "notes": "Part of crypto-browserify family."
+  },
+  "randombytes": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["drbg"],
+    "algorithmFamilies": ["CSPRNG"],
+    "notes": "Random byte generation shim. Weak standalone signal — nearly always a transitive dep, not a direct crypto choice."
+  },
+  "secure-random": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["drbg"],
+    "algorithmFamilies": ["CSPRNG"],
+    "notes": "CSPRNG wrapper."
+  },
+  "uuid": {
+    "ecosystem": "npm", "cryptoCapable": false,
+    "primitives": [],
+    "algorithmFamilies": [],
+    "notes": "False-positive trap: generates identifiers, not cryptographic material. v4 uses a CSPRNG internally but the library itself is not a crypto-primitive detector target."
+  },
+  "otplib": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac"],
+    "algorithmFamilies": ["HMAC", "HOTP", "TOTP"],
+    "notes": "HOTP/TOTP 2FA codes, HMAC-based."
+  },
+  "speakeasy": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac"],
+    "algorithmFamilies": ["HMAC", "HOTP", "TOTP"],
+    "notes": "Older HOTP/TOTP library, same primitive family as otplib."
+  },
+  "openpgp": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "symmetric", "signature", "kdf"],
+    "algorithmFamilies": ["RSA", "ECC", "AES", "SHA", "PGP"],
+    "notes": "OpenPGP.js — full PGP suite, broad and high-confidence signal."
+  },
+  "asn1.js": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["X.509", "ASN.1"],
+    "notes": "ASN.1 encode/decode, usually supporting cert/key parsing rather than crypto operations itself."
+  },
+  "selfsigned": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA", "X.509"],
+    "notes": "Generates self-signed certs (wraps node-forge). Strong AssetType.CERTIFICATE signal, common in dev-only setups — check devDependency scope."
+  },
+  "pem-jwk": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA", "EC"],
+    "notes": "Key-format conversion utility."
+  },
+  "keypair": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "RSA keypair generation wrapper."
+  },
+  "rsa-pem-to-jwk": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric"],
+    "algorithmFamilies": ["RSA"],
+    "notes": "Key-format conversion utility."
+  },
+  "@peculiar/webcrypto": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "hash", "signature", "kdf", "ae", "key-agreement"],
+    "algorithmFamilies": ["AES", "RSA", "EC", "SHA", "HKDF", "PBKDF2"],
+    "notes": "W3C Web Crypto API polyfill for Node — same algorithmIdentifier objects as browser subtle.crypto, good semgrep target for subtle.digest/encrypt/generateKey."
+  },
+  "webcrypto-core": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "hash", "signature", "kdf", "ae"],
+    "algorithmFamilies": ["AES", "RSA", "EC", "SHA"],
+    "notes": "Shared core for @peculiar/webcrypto and related polyfills."
+  },
+  "secp256k1": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "signature", "key-agreement"],
+    "algorithmFamilies": ["secp256k1", "ECDSA", "ECDH"],
+    "notes": "Native bindings for the secp256k1 curve — near-universal in Web3/blockchain code (Bitcoin, Ethereum signing)."
+  },
+  "eciesjs": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["asymmetric", "key-agreement", "ae"],
+    "algorithmFamilies": ["secp256k1", "ECIES", "AES"],
+    "notes": "Elliptic Curve Integrated Encryption Scheme, common in Web3 wallet/messaging code."
+  },
+  "ethereumjs-util": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash", "asymmetric", "signature"],
+    "algorithmFamilies": ["Keccak-256", "secp256k1", "ECDSA"],
+    "notes": "Ethereum crypto utilities — Keccak-256 hashing, secp256k1 signing. Relevant given your Web3 club context."
+  },
+  "bitcoinjs-lib": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash", "asymmetric", "signature"],
+    "algorithmFamilies": ["SHA-256", "RIPEMD-160", "secp256k1", "ECDSA"],
+    "notes": "Bitcoin protocol crypto — double-SHA256, RIPEMD-160, secp256k1 ECDSA."
+  },
+  "ethers": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash", "asymmetric", "signature", "key-agreement"],
+    "algorithmFamilies": ["Keccak-256", "secp256k1", "ECDSA", "HDKey/BIP32"],
+    "notes": "Ethereum wallet/contract library — wraps @noble/curves and @noble/hashes internally in recent versions."
+  },
+  "web3": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["hash", "asymmetric", "signature"],
+    "algorithmFamilies": ["Keccak-256", "secp256k1", "ECDSA"],
+    "notes": "Ethereum JSON-RPC client with built-in signing utilities."
+  },
+  "cookie-signature": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac"],
+    "algorithmFamilies": ["HMAC"],
+    "notes": "HMAC-SHA256 cookie signing, used internally by express-session/cookie-parser."
+  },
+  "csrf": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac", "drbg"],
+    "algorithmFamilies": ["HMAC", "CSPRNG"],
+    "notes": "CSRF token generation/verification, HMAC + random token based."
+  },
+  "passport-jwt": {
+    "ecosystem": "npm", "cryptoCapable": false,
+    "primitives": [],
+    "algorithmFamilies": ["JWT"],
+    "notes": "Auth strategy wrapper — delegates actual verification to jsonwebtoken/jose. Marked non-crypto-capable itself so it doesn't double-count evidence already attributed to jsonwebtoken."
+  },
+  "express-jwt": {
+    "ecosystem": "npm", "cryptoCapable": false,
+    "primitives": [],
+    "algorithmFamilies": ["JWT"],
+    "notes": "Middleware wrapper, same double-counting caveat as passport-jwt."
+  },
+  "ssh2": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "mac", "key-agreement"],
+    "algorithmFamilies": ["SSH", "AES", "RSA", "ECDSA", "Ed25519"],
+    "notes": "SSH2 client/server protocol implementation. AssetType.PROTOCOL context."
+  },
+  "node-ssh": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["symmetric", "asymmetric", "mac", "key-agreement"],
+    "algorithmFamilies": ["SSH"],
+    "notes": "High-level wrapper over ssh2."
+  },
+  "helmet": {
+    "ecosystem": "npm", "cryptoCapable": false,
+    "primitives": [],
+    "algorithmFamilies": [],
+    "notes": "False-positive trap: sets HTTP security headers (HSTS, CSP), does not itself implement any cryptographic primitive."
+  }
+}
