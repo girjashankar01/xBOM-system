@@ -18,14 +18,24 @@ const { CryptoFinding, Evidence, EvidenceClass } = require('../core/models');
 const { AssetType, MaterialType } = require('../core/taxonomy');
 
 const PATTERNS = [
-  { label: MaterialType.PRIVATE_KEY, regex: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
-  { label: 'certificate', regex: /-----BEGIN CERTIFICATE-----/ },
-  { label: MaterialType.PUBLIC_KEY, regex: /-----BEGIN PUBLIC KEY-----/ },
+  { label: MaterialType.PRIVATE_KEY, regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g },
+  { label: 'certificate', regex: /-----BEGIN CERTIFICATE-----/g },
+  { label: MaterialType.PUBLIC_KEY, regex: /-----BEGIN PUBLIC KEY-----/g },
 ];
 
 const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.cer', '.p12', '.pfx', '.jks', '.keystore']);
-const SKIP_DIR_NAMES = new Set(['node_modules', '.git']);
+const SKIP_DIR_NAMES = new Set([
+  'node_modules', '.git', 'dist', 'build', 'coverage', '.next',
+  '__tests__', '__mocks__', 'test', 'tests', 'fixtures',
+]);
 const SIZE_GUARD_BYTES = 20_000; // read-full-content threshold for extensionless/misnamed key files
+
+function isTestPath(filename, relPath = '') {
+  if (/[._-](test|spec)\.[a-zA-Z0-9]+$/i.test(filename)) return true;
+  const normalized = relPath.replace(/\\/g, '/');
+  if (/(?:^|\/)(?:__tests__|__mocks__|test|tests)\//i.test(normalized)) return true;
+  return false;
+}
 
 function fingerprint(buf) {
   // Never store or emit the actual key/cert bytes — hash only.
@@ -48,6 +58,8 @@ function* iterCandidateFiles(targetDir) {
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile()) {
+        const relPath = path.relative(targetDir, full).replace(/\\/g, '/');
+        if (isTestPath(entry.name, relPath)) continue;
         const ext = path.extname(full).toLowerCase();
         const size = fs.statSync(full).size;
         if (KEY_FILE_EXTENSIONS.has(ext) || size < SIZE_GUARD_BYTES) {
@@ -81,61 +93,78 @@ function scan(targetDir) {
     } catch {
       continue;
     }
+    const contentStr = content.toString('latin1');
+    const seenLocations = new Set();
 
     for (const { label, regex } of PATTERNS) {
-      const match = content.toString('latin1').match(regex);
-      if (!match) continue;
+      const matcher = new RegExp(regex.source, regex.flags);
+      let match;
+      while ((match = matcher.exec(contentStr)) !== null) {
+        const upToMatch = contentStr.slice(0, match.index);
+        const line = (upToMatch.match(/\n/g) || []).length + 1;
+        const locKey = `${filePath}:${line}:${label}`;
+        if (seenLocations.has(locKey)) continue;
+        seenLocations.add(locKey);
 
-      const fp = fingerprint(content);
-      const isCert = label === 'certificate';
-      const upToMatch = content.toString('latin1').slice(0, match.index);
-      const line = (upToMatch.match(/\n/g) || []).length + 1;
+        const rest = contentStr.slice(match.index);
+        const endIdx = rest.indexOf('-----END ');
+        let blockStr;
+        if (endIdx !== -1) {
+          const endLineEnd = rest.indexOf('\n', endIdx);
+          blockStr = endLineEnd !== -1 ? rest.slice(0, endLineEnd + 1) : rest.slice(0, endIdx + 30);
+        } else {
+          blockStr = rest;
+        }
+        const blockBuf = Buffer.from(blockStr, 'latin1');
+        const fp = fingerprint(blockBuf);
 
-      const finding = new CryptoFinding({
-        assetType: isCert ? AssetType.CERTIFICATE : AssetType.RELATED_CRYPTO_MATERIAL,
-        name: isCert ? 'X.509 Certificate' : label,
-        materialType: isCert ? null : label,
-        filePath,
-        line,
-      });
-      const ext = path.extname(filePath).toLowerCase();
-      finding.fingerprint = fp;
-      finding.keyExtension = ext;
+        const isCert = label === 'certificate';
 
-      const hasStdExt = KEY_FILE_EXTENSIONS.has(ext);
-      const baseRawConf = hasStdExt ? 0.95 : 0.80;
-
-      finding.addEvidence(
-        new Evidence({
-          source: 'keys_certs',
-          evidenceClass: EvidenceClass.DIRECT,
-          detail: `PEM header match (${label}), fingerprint=${fp}${hasStdExt ? '' : ' (non-standard extension)'}`,
-          rawConfidence: baseRawConf,
+        const finding = new CryptoFinding({
+          assetType: isCert ? AssetType.CERTIFICATE : AssetType.RELATED_CRYPTO_MATERIAL,
+          name: isCert ? 'X.509 Certificate' : label,
+          materialType: isCert ? null : label,
           filePath,
           line,
-        })
-      );
+        });
+        const ext = path.extname(filePath).toLowerCase();
+        finding.fingerprint = fp;
+        finding.keyExtension = ext;
 
-      if (isCert) {
-        const meta = parseCertMetadata(content);
-        if (meta.signatureAlgorithm) finding.parameterSet = meta.signatureAlgorithm;
-        if (meta.subject || meta.validTo) {
-          finding.callContext = { subject: meta.subject, validTo: meta.validTo };
-          finding.addEvidence(
-            new Evidence({
-              source: 'keys_certs',
-              evidenceClass: EvidenceClass.SUPPORTING,
-              detail: `Parsed X.509 certificate metadata (subject=${meta.subject || 'unknown'})`,
-              rawConfidence: 0.90,
-              filePath,
-              line,
-            })
-          );
+        const hasStdExt = KEY_FILE_EXTENSIONS.has(ext);
+        const baseRawConf = hasStdExt ? 0.95 : 0.80;
+
+        finding.addEvidence(
+          new Evidence({
+            source: 'keys_certs',
+            evidenceClass: EvidenceClass.DIRECT,
+            detail: `PEM header match (${label}), fingerprint=${fp}${hasStdExt ? '' : ' (non-standard extension)'}`,
+            rawConfidence: baseRawConf,
+            filePath,
+            line,
+          })
+        );
+
+        if (isCert) {
+          const meta = parseCertMetadata(blockBuf);
+          if (meta.signatureAlgorithm) finding.parameterSet = meta.signatureAlgorithm;
+          if (meta.subject || meta.validTo) {
+            finding.callContext = { subject: meta.subject, validTo: meta.validTo };
+            finding.addEvidence(
+              new Evidence({
+                source: 'keys_certs',
+                evidenceClass: EvidenceClass.SUPPORTING,
+                detail: `Parsed X.509 certificate metadata (subject=${meta.subject || 'unknown'})`,
+                rawConfidence: 0.90,
+                filePath,
+                line,
+              })
+            );
+          }
         }
-      }
 
-      findings.push(finding);
-      break; // one PEM header type match per file is enough for our purposes
+        findings.push(finding);
+      }
     }
   }
 

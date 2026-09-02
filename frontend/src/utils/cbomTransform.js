@@ -23,6 +23,8 @@ export const ASSET_TYPE_LABEL = {
 
 export const QUANTUM_LEVELS = [0, 1, 2, 3, 4, 5]
 
+export const EXPOSURE_RISK_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NONE']
+
 export const CONFIDENCE_ORDER = ['very-high', 'high', 'medium', 'low']
 
 export const CONFIDENCE_LABEL = {

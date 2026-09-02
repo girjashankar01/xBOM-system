@@ -162,7 +162,7 @@ function classifyRisk(nistQuantumLevel, dataSensitivity, isNonApplicable = false
 function classifyExposureRisk(finding) {
   const filePath = finding.filePath || '';
   const isKeyFileOnDisk = /\.(key|pem|p8|pkcs8)$/i.test(filePath) ||
-    finding.evidence.some(e => e.source === 'keysCerts' || /PEM header|file match|fs\.read/i.test(e.detail || ''));
+    finding.evidence.some(e => e.source === 'keys_certs' || e.source === 'keysCerts' || /PEM header|file match|fs\.read/i.test(e.detail || ''));
 
   const isPrivateKey =
     (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL &&
@@ -173,14 +173,15 @@ function classifyExposureRisk(finding) {
        /private-key/i.test(finding.name || ''))) ||
     /\.(key|pem|p8|pkcs8)$/i.test(filePath);
 
-  // 1. Static committed private key file on disk -> CRITICAL
-  if ((isPrivateKey && isKeyFileOnDisk) || /\.(key|pem|p8|pkcs8)$/i.test(filePath)) {
+  // 1. Static committed private key file on disk OR hardcoded PEM in source code (keys_certs) -> CRITICAL
+  if (isPrivateKey && (isKeyFileOnDisk || finding.evidence.some(e => e.source === 'keys_certs' || e.source === 'keysCerts' || /PEM header/i.test(e.detail || '')))) {
     return 'CRITICAL';
   }
 
   // 2. In-memory runtime generated key pair (e.g. generateKeyPairSync in JS/TS source file)
-  const isRuntimeGeneratedKey = isPrivateKey && !isKeyFileOnDisk &&
-    (finding.evidence.some(e => /generateKeyPair/i.test(e.detail || '')) || /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(filePath));
+  const isRuntimeGeneratedKey = isPrivateKey &&
+    finding.evidence.some(e => e.source === 'ast' && /generateKeyPair/i.test(e.detail || '')) &&
+    !finding.evidence.some(e => e.source === 'keys_certs' || e.source === 'keysCerts' || /PEM header/i.test(e.detail || ''));
 
   if (isRuntimeGeneratedKey) {
     return 'NONE';

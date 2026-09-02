@@ -30,8 +30,18 @@ const KNOWN_CONSTANTS = [
   [Buffer.from('expand 32-byte k', 'ascii'), ['ChaCha20', Primitive.STREAM_CIPHER]],
   [Buffer.from('ffffffffffffffffc90fdaa22168c234', 'hex'), ['FFDH', Primitive.KEY_AGREE]],
 ];
-const SKIP_DIR_NAMES = new Set(['node_modules', '.git']);
+const SKIP_DIR_NAMES = new Set([
+  'node_modules', '.git', 'dist', 'build', 'coverage', '.next',
+  '__tests__', '__mocks__', 'test', 'tests', 'fixtures',
+]);
 const MAX_FILE_BYTES = 2_000_000;
+
+function isTestPath(filename, relPath = '') {
+  if (/[._-](test|spec)\.[a-zA-Z0-9]+$/i.test(filename)) return true;
+  const normalized = relPath.replace(/\\/g, '/');
+  if (/(?:^|\/)(?:__tests__|__mocks__|test|tests)\//i.test(normalized)) return true;
+  return false;
+}
 
 function* iterFiles(targetDir) {
   const stack = [targetDir];
@@ -46,8 +56,13 @@ function* iterFiles(targetDir) {
     for (const entry of entries) {
       if (SKIP_DIR_NAMES.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile()) yield full;
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        const relPath = path.relative(targetDir, full).replace(/\\/g, '/');
+        if (isTestPath(entry.name, relPath)) continue;
+        yield full;
+      }
     }
   }
 }
