@@ -39,7 +39,7 @@ const SHOR_BROKEN_FAMILIES = new Set([
 
 // Broken classically already (pre-quantum) — still bucketed at L0 since
 // "worse than broken" isn't a lower number than "broken".
-const CLASSICALLY_BROKEN_FAMILIES = new Set(['MD5', 'DES', '3DES', 'RC4']);
+const CLASSICALLY_BROKEN_FAMILIES = new Set(['MD5', 'DES', '3DES', 'TRIPLEDES', 'RC4', 'NONE']);
 
 // key-size (bits) -> NIST quantum level, thresholds checked high-to-low.
 const SYMMETRIC_QUANTUM_LEVEL_BY_KEYSIZE = [

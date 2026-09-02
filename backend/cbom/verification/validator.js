@@ -15,13 +15,14 @@
 //      the finding still passes through — CycloneDX's algorithmFamily is
 //      SHOULD-match-enum, not MUST.
 
-const { AssetType, Primitive, MaterialType } = require('../core/taxonomy');
+const { AssetType, Primitive, MaterialType, SourceContext } = require('../core/taxonomy');
 const registry = require('./registry_snapshot.json');
 
 const REGISTRY_FAMILY_SET = new Set(registry.algorithmFamilies);
 const VALID_ASSET_TYPES = new Set(Object.values(AssetType));
 const VALID_PRIMITIVES = new Set(Object.values(Primitive));
 const VALID_MATERIAL_TYPES = new Set(Object.values(MaterialType));
+const VALID_SOURCE_CONTEXTS = new Set(Object.values(SourceContext));
 
 class ValidationIssue {
   constructor({ level, field, findingId, message }) {
@@ -64,6 +65,7 @@ function validateFinding(finding) {
   const id = finding.findingId;
 
   checkEnum(finding.assetType, VALID_ASSET_TYPES, 'assetType', id, issues, { required: true });
+  checkEnum(finding.sourceContext, VALID_SOURCE_CONTEXTS, 'sourceContext', id, issues, { required: true });
   checkEnum(finding.primitive, VALID_PRIMITIVES, 'primitive', id, issues);
   checkEnum(finding.materialType, VALID_MATERIAL_TYPES, 'materialType', id, issues);
 

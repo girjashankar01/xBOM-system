@@ -50,7 +50,7 @@ function shouldMerge(a, b, lineWindow) {
 function fillMissing(dst, src) {
   const fields = [
     'primitive', 'algorithmFamily', 'parameterSet', 'mode', 'materialType',
-    'fingerprint', 'keyExtension', 'callContext',
+    'fingerprint', 'keyExtension', 'callContext', 'sourceContext',
   ];
   for (const f of fields) {
     if ((dst[f] === null || dst[f] === undefined) && src[f] != null) dst[f] = src[f];

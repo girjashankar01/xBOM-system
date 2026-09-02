@@ -129,6 +129,7 @@ function scanAstFile(filePath, code) {
     const assetType = opts.assetType || AssetType.ALGORITHM;
     const isMaterial = assetType === AssetType.RELATED_CRYPTO_MATERIAL;
     const isCert = assetType === AssetType.CERTIFICATE;
+    const sourceContext = opts.sourceContext || 'live';
 
     const f = new CryptoFinding({
       assetType,
@@ -140,6 +141,7 @@ function scanAstFile(filePath, code) {
       materialType: isMaterial ? (opts.materialType || MaterialType.SECRET_KEY) : null,
       filePath,
       line: lineNum,
+      sourceContext,
     });
 
     const rawConf = opts.rawConfidence ?? 0.95;
@@ -181,9 +183,26 @@ function scanAstFile(filePath, code) {
     return scanRegexFallback(filePath, lines);
   }
 
-  // 1. Traverse AST CallExpressions
+  // 1. Traverse AST CallExpressions & collect aliases
+  const cryptoJsAliases = new Set(['cryptojs', 'crypto_js']);
+  const jwtAliases = new Set(['jwt', 'jsonwebtoken', 'jose']);
+
   try {
     traverse(ast, {
+      VariableDeclarator(p) {
+        const id = p.node.id;
+        const init = p.node.init;
+        if (id && id.type === 'Identifier' && init) {
+          if (init.type === 'Identifier') {
+            if (/^(cryptojs|crypto_js)$/i.test(init.name)) cryptoJsAliases.add(id.name.toLowerCase());
+            if (/^(jwt|jsonwebtoken|jose)$/i.test(init.name)) jwtAliases.add(id.name.toLowerCase());
+          } else if (init.type === 'CallExpression' && init.callee && init.callee.name === 'require' && init.arguments[0]) {
+            const reqVal = extractLiteralValue(init.arguments[0]);
+            if (reqVal === 'crypto-js') cryptoJsAliases.add(id.name.toLowerCase());
+            if (reqVal === 'jsonwebtoken' || reqVal === 'jose') jwtAliases.add(id.name.toLowerCase());
+          }
+        }
+      },
       CallExpression(p) {
         const node = p.node;
         const line = node.loc ? node.loc.start.line : 1;
@@ -195,9 +214,18 @@ function scanAstFile(filePath, code) {
         if (callee.type === 'MemberExpression') {
           if (callee.object.type === 'Identifier') {
             objName = callee.object.name;
-          } else if (callee.object.type === 'MemberExpression' && callee.object.property) {
-            const prefix = callee.object.object && callee.object.object.name ? callee.object.object.name + '.' : '';
-            objName = prefix + callee.object.property.name;
+          } else if (callee.object.type === 'MemberExpression') {
+            const getFullName = (m) => {
+              if (!m) return '';
+              if (m.type === 'Identifier') return m.name;
+              if (m.type === 'MemberExpression') {
+                const o = getFullName(m.object);
+                const pr = m.property ? m.property.name : '';
+                return o ? `${o}.${pr}` : pr;
+              }
+              return '';
+            };
+            objName = getFullName(callee.object);
           }
           if (callee.property.type === 'Identifier') {
             propName = callee.property.name;
@@ -207,6 +235,7 @@ function scanAstFile(filePath, code) {
         }
 
         const objLower = (objName || '').toLowerCase();
+        const objRoot = (objName || '').split('.')[0].toLowerCase();
 
         // 1. bcrypt / bcrypt-nodejs / bcryptjs
         if ((objLower === 'bcrypt' || objLower === 'bcryptjs' || objLower === 'bcrypt-nodejs' || objLower.includes('bcrypt')) &&
@@ -216,7 +245,6 @@ function scanAstFile(filePath, code) {
           const roundsArg = extractLiteralValue(node.arguments[0]);
 
           if (isSalt) {
-            // Salt generation -> related-crypto-material of type salt, NO algorithm primitive
             addFinding({
               assetType: AssetType.RELATED_CRYPTO_MATERIAL,
               name: 'bcrypt-salt',
@@ -225,9 +253,9 @@ function scanAstFile(filePath, code) {
               materialType: MaterialType.SALT,
               parameterSet: roundsArg ? `${roundsArg} rounds` : null,
               rawConfidence: roundsArg ? 0.95 : 0.85,
+              sourceContext: 'live',
             }, line, `${objName}.${propName}() [salt generation]`);
           } else if (isCompare) {
-            // Password verification -> algorithm bcrypt without KDF primitive
             addFinding({
               assetType: AssetType.ALGORITHM,
               name: 'bcrypt',
@@ -235,9 +263,9 @@ function scanAstFile(filePath, code) {
               primitive: null,
               materialType: null,
               rawConfidence: 0.95,
+              sourceContext: 'live',
             }, line, `${objName}.${propName}() [password verify]`);
           } else {
-            // Password hash derivation -> algorithm bcrypt with KDF primitive
             addFinding({
               assetType: AssetType.ALGORITHM,
               name: 'bcrypt',
@@ -245,6 +273,7 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.KDF,
               materialType: null,
               rawConfidence: 0.95,
+              sourceContext: 'live',
             }, line, `${objName}.${propName}() [password hash]`);
           }
         }
@@ -260,6 +289,7 @@ function scanAstFile(filePath, code) {
               algorithmFamily: parsed.family || 'HASH',
               primitive: Primitive.HASH,
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.createHash(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (propName === 'createHmac') {
             const algArg = extractLiteralValue(node.arguments[0]);
@@ -271,6 +301,7 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.MAC,
               mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.createHmac(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (/^createCipher(iv)?$/.test(propName)) {
             const algArg = extractLiteralValue(node.arguments[0]);
@@ -284,6 +315,7 @@ function scanAstFile(filePath, code) {
               mode: parsed.mode || null,
               parameterSet: parsed.keySize || null,
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (/^createDecipher(iv)?$/.test(propName)) {
             const algArg = extractLiteralValue(node.arguments[0]);
@@ -297,6 +329,7 @@ function scanAstFile(filePath, code) {
               mode: parsed.mode || null,
               parameterSet: parsed.keySize || null,
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (/^createSign$/.test(propName)) {
             const algArg = extractLiteralValue(node.arguments[0]);
@@ -308,6 +341,7 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.SIGNATURE,
               mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.createSign(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (/^createVerify$/.test(propName)) {
             const algArg = extractLiteralValue(node.arguments[0]);
@@ -319,6 +353,7 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.SIGNATURE,
               mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
               rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.createVerify(${algArg ? '"' + algArg + '"' : ''})`);
           } else if (/^pbkdf2(Sync)?$/.test(propName)) {
             const iterArg = extractLiteralValue(node.arguments[2]);
@@ -336,6 +371,7 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.KDF,
               parameterSet: params || null,
               rawConfidence: hasExplicitArgs ? 0.95 : 0.85,
+              sourceContext: 'live',
             }, line, `crypto.${propName}()`);
           } else if (/^scrypt(Sync)?$/.test(propName)) {
             addFinding({
@@ -343,6 +379,7 @@ function scanAstFile(filePath, code) {
               algorithmFamily: 'scrypt',
               primitive: Primitive.KDF,
               rawConfidence: 0.95,
+              sourceContext: 'live',
             }, line, `crypto.${propName}()`);
           } else if (/^randomBytes(Sync)?$/.test(propName)) {
             const bytesArg = extractLiteralValue(node.arguments[0]);
@@ -352,11 +389,11 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.DRBG,
               parameterSet: bytesArg ? `${bytesArg * 8} bits` : null,
               rawConfidence: bytesArg ? 0.95 : 0.85,
+              sourceContext: 'live',
             }, line, `crypto.randomBytes(${bytesArg || ''})`);
           } else if (/^generateKeyPair(Sync)?$/.test(propName)) {
             const typeArg = extractLiteralValue(node.arguments[0]);
             const family = typeArg ? typeArg.toUpperCase() : 'RSA';
-            // Keypair generation emits key material (related-crypto-material) without primitive
             addFinding({
               assetType: AssetType.RELATED_CRYPTO_MATERIAL,
               materialType: MaterialType.PRIVATE_KEY,
@@ -364,6 +401,7 @@ function scanAstFile(filePath, code) {
               algorithmFamily: family,
               primitive: null,
               rawConfidence: typeArg ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.${propName}(${typeArg ? '"' + typeArg + '"' : ''})`);
           } else if (/^(createDiffieHellman|createECDH)$/.test(propName)) {
             const curveArg = extractLiteralValue(node.arguments[0]);
@@ -373,83 +411,119 @@ function scanAstFile(filePath, code) {
               primitive: Primitive.KEY_AGREE,
               parameterSet: curveArg ? String(curveArg) : null,
               rawConfidence: curveArg ? 0.95 : 0.80,
+              sourceContext: 'live',
             }, line, `crypto.${propName}(${curveArg ? '"' + curveArg + '"' : ''})`);
           }
         }
 
         // 3. jsonwebtoken / jwt / jose
-        if ((objLower === 'jwt' || objLower === 'jsonwebtoken' || objLower.includes('jwt') || objLower.includes('jose')) &&
-            /^(sign|verify|signJWT|jwtVerify|compactEncrypt)$/i.test(propName)) {
-          let alg = null;
+        if ((jwtAliases.has(objRoot) || objLower.includes('jwt') || objLower.includes('jose')) &&
+            /^(sign|verify|signJWT|jwtVerify|compactSign|compactEncrypt)$/i.test(propName)) {
+          let algs = [];
           let isWeak = false;
 
           for (const arg of node.arguments) {
             if (arg && arg.type === 'ObjectExpression') {
               for (const pr of arg.properties) {
-                if (pr.key && (pr.key.name === 'algorithm' || pr.key.value === 'algorithm')) {
-                  alg = extractLiteralValue(pr.value);
+                if (pr.key) {
+                  const kName = pr.key.name || pr.key.value;
+                  if (kName === 'algorithm') {
+                    const v = extractLiteralValue(pr.value);
+                    if (v) algs.push(v);
+                  } else if (kName === 'algorithms' && pr.value && pr.value.type === 'ArrayExpression') {
+                    for (const elem of pr.value.elements) {
+                      const v = extractLiteralValue(elem);
+                      if (v) algs.push(v);
+                    }
+                  }
                 }
               }
             }
           }
 
-          const hasExplicitAlg = alg != null;
-          if (!alg) alg = 'HS256';
+          const hasExplicitAlg = algs.length > 0;
+          if (!algs.length) algs = ['HS256'];
 
           const secretArg = extractLiteralValue(node.arguments[1]);
           if (secretArg && (typeof secretArg === 'string') && (secretArg === 'secret' || secretArg.length < 16)) {
             isWeak = true;
           }
-          if (alg && alg.toLowerCase() === 'none') {
-            isWeak = true;
-          }
 
-          const parsed = parseAlgorithmIdentifier(alg) || { family: 'HMAC', mode: 'SHA-256' };
-          addFinding({
-            assetType: AssetType.ALGORITHM,
-            name: parsed.family || 'JWT',
-            algorithmFamily: parsed.family || 'JWT',
-            primitive: Primitive.SIGNATURE,
-            mode: parsed.mode || null,
-            parameterSet: isWeak ? 'weak-secret-or-none' : alg,
-            rawConfidence: hasExplicitAlg ? 0.95 : 0.80,
-          }, line, `jwt.${propName}(${alg})` + (isWeak ? ' [flagged weak secret/none]' : ''));
+          for (const alg of algs) {
+            const isNone = String(alg).toLowerCase() === 'none';
+            const parsed = parseAlgorithmIdentifier(alg) || { family: isNone ? 'none' : 'HMAC', mode: isNone ? null : 'SHA-256' };
+            const flagWeak = isWeak || isNone;
+            addFinding({
+              assetType: AssetType.ALGORITHM,
+              name: isNone ? 'none' : (parsed.family || 'JWT'),
+              algorithmFamily: isNone ? 'none' : (parsed.family || 'JWT'),
+              primitive: Primitive.SIGNATURE,
+              mode: parsed.mode || null,
+              parameterSet: flagWeak ? (isNone ? 'none-algorithm-insecure' : 'weak-secret') : alg,
+              rawConfidence: hasExplicitAlg ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `jwt.${propName}(${alg})` + (flagWeak ? ` [flagged ${isNone ? 'insecure none algorithm' : 'weak secret'}]` : ''));
+          }
         }
 
         // 4. CryptoJS
-        if (objLower.includes('cryptojs') || objLower.includes('crypto_js')) {
-          if (propName === 'encrypt' || propName === 'decrypt') {
-            const cipherType = objName.split('.').pop() || 'AES';
-            const parsed = parseAlgorithmIdentifier(cipherType) || { family: cipherType.toUpperCase() };
-            const isStream = /^(RC4|Rabbit)$/i.test(cipherType);
+        if (cryptoJsAliases.has(objRoot) || objLower.includes('cryptojs') || objLower.includes('crypto_js')) {
+          const parts = (objName || '').split('.');
+          const lastPart = parts[parts.length - 1] || '';
+
+          if (propName === 'encrypt' || propName === 'decrypt' || propName === 'createEncryptor' || propName === 'createDecryptor') {
+            const cipherType = lastPart !== 'encrypt' && lastPart !== 'decrypt' ? lastPart : (parts.length > 1 ? parts[parts.length - 2] : 'AES');
+            const isTripleDes = /tripledes/i.test(cipherType);
+            const isDes = /des/i.test(cipherType) && !isTripleDes;
+            const isRc4 = /rc4/i.test(cipherType);
+            const isRabbit = /rabbit/i.test(cipherType);
+            const isStream = isRc4 || isRabbit;
+
+            let family = 'AES';
+            let primitive = Primitive.BLOCK_CIPHER;
+            if (isTripleDes) { family = '3DES'; }
+            else if (isDes) { family = 'DES'; }
+            else if (isRc4) { family = 'RC4'; primitive = Primitive.STREAM_CIPHER; }
+            else if (isRabbit) { family = 'Rabbit'; primitive = Primitive.STREAM_CIPHER; }
+
             addFinding({
-              name: parsed.family || 'AES',
-              algorithmFamily: parsed.family || 'AES',
-              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              name: family,
+              algorithmFamily: family,
+              primitive,
               rawConfidence: 0.95,
+              sourceContext: 'live',
             }, line, `CryptoJS.${cipherType}.${propName}()`);
-          } else if (/^(SHA256|SHA512|SHA384|SHA224|SHA1|MD5|RIPEMD160)$/i.test(propName)) {
+          } else if (/^(SHA256|SHA512|SHA384|SHA224|SHA1|SHA3|MD5|RIPEMD160)$/i.test(propName) ||
+                     /^(SHA256|SHA512|SHA384|SHA224|SHA1|SHA3|MD5|RIPEMD160)$/i.test(lastPart)) {
+            const rawHash = /^(SHA256|SHA512|SHA384|SHA224|SHA1|SHA3|MD5|RIPEMD160)$/i.test(propName) ? propName : lastPart;
+            const parsed = parseAlgorithmIdentifier(rawHash) || { family: rawHash.toUpperCase() };
             addFinding({
-              name: propName.toUpperCase(),
-              algorithmFamily: propName.toUpperCase(),
+              name: parsed.family || rawHash.toUpperCase(),
+              algorithmFamily: parsed.family || rawHash.toUpperCase(),
               primitive: Primitive.HASH,
               rawConfidence: 0.95,
-            }, line, `CryptoJS.${propName}()`);
-          } else if (/^Hmac/i.test(propName)) {
+              sourceContext: 'live',
+            }, line, `CryptoJS.${rawHash}()`);
+          } else if (/^Hmac/i.test(propName) || /^Hmac/i.test(lastPart)) {
+            const rawHmac = /^Hmac/i.test(propName) ? propName : lastPart;
+            const hashPart = rawHmac.replace(/^Hmac/i, '').toUpperCase();
             addFinding({
               name: 'HMAC',
               algorithmFamily: 'HMAC',
               primitive: Primitive.MAC,
-              mode: propName.replace(/^Hmac/i, '').toUpperCase(),
+              mode: hashPart || 'SHA-256',
               rawConfidence: 0.95,
-            }, line, `CryptoJS.${propName}()`);
-          } else if (propName === 'PBKDF2') {
+              sourceContext: 'live',
+            }, line, `CryptoJS.${rawHmac}()`);
+          } else if (/^(PBKDF2|EvpKDF)$/i.test(propName) || /^(PBKDF2|EvpKDF)$/i.test(lastPart)) {
+            const rawKdf = /^(PBKDF2|EvpKDF)$/i.test(propName) ? propName : lastPart;
             addFinding({
-              name: 'PBKDF2',
-              algorithmFamily: 'PBKDF2',
+              name: rawKdf.toUpperCase(),
+              algorithmFamily: rawKdf.toUpperCase(),
               primitive: Primitive.KDF,
               rawConfidence: 0.95,
-            }, line, `CryptoJS.PBKDF2()`);
+              sourceContext: 'live',
+            }, line, `CryptoJS.${rawKdf}()`);
           }
         }
       },
@@ -480,6 +554,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         primitive: null,
         materialType: MaterialType.SALT,
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'bcrypt.genSalt (code comment)');
     } else if (/bcrypt\.compare/.test(l)) {
       addFinding({
@@ -488,6 +563,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         algorithmFamily: 'bcrypt',
         primitive: null,
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'bcrypt.compare (code comment)');
     } else if (/bcrypt\.hash/.test(l)) {
       addFinding({
@@ -496,6 +572,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         algorithmFamily: 'bcrypt',
         primitive: Primitive.KDF,
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'bcrypt.hash (code comment)');
     }
     if (/crypto\.pbkdf2(Sync)?\s*\(/.test(l)) {
@@ -505,6 +582,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         primitive: Primitive.KDF,
         parameterSet: 'sha512',
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'crypto.pbkdf2Sync (code comment)');
     }
     if (/crypto\.createCipher(iv)?\s*\(/.test(l)) {
@@ -514,6 +592,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         primitive: Primitive.BLOCK_CIPHER,
         mode: 'CBC',
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'crypto.createCipheriv (code comment)');
     }
     if (/crypto\.createDecipher(iv)?\s*\(/.test(l)) {
@@ -523,6 +602,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         primitive: Primitive.BLOCK_CIPHER,
         mode: 'CBC',
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'crypto.createDecipheriv (code comment)');
     }
     if (/crypto\.randomBytes(Sync)?\s*\(/.test(l)) {
@@ -532,6 +612,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         primitive: Primitive.DRBG,
         parameterSet: '128 bits',
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'crypto.randomBytes (code comment)');
     }
     if (/jwt\.(sign|verify)/.test(l)) {
@@ -540,6 +621,7 @@ function scanCommentLines(text, baseLine, addFinding) {
         algorithmFamily: 'JWT',
         primitive: Primitive.SIGNATURE,
         rawConfidence: 0.65,
+        sourceContext: 'comment',
       }, curLine, 'jwt.sign/verify (code comment)');
     }
   });
@@ -626,6 +708,7 @@ function scanRegexFallback(filePath, lines) {
         parameterSet: alg,
         filePath,
         line: lineNum,
+        sourceContext: 'live',
       });
       f.addEvidence(new Evidence({
         source: 'ast',
@@ -636,6 +719,111 @@ function scanRegexFallback(filePath, lines) {
         line: lineNum,
       }));
       findings.push(f);
+    }
+    if (/CryptoJS/i.test(l)) {
+      if (/CryptoJS\.(AES|DES|TripleDES|RC4|Rabbit)\.(encrypt|decrypt)/i.test(l)) {
+        const m = l.match(/CryptoJS\.(AES|DES|TripleDES|RC4|Rabbit)/i);
+        const cipherType = m ? m[1] : 'AES';
+        const isTripleDes = /tripledes/i.test(cipherType);
+        const isDes = /des/i.test(cipherType) && !isTripleDes;
+        const isRc4 = /rc4/i.test(cipherType);
+        const isRabbit = /rabbit/i.test(cipherType);
+        const isStream = isRc4 || isRabbit;
+
+        let family = 'AES';
+        let primitive = Primitive.BLOCK_CIPHER;
+        if (isTripleDes) { family = '3DES'; }
+        else if (isDes) { family = 'DES'; }
+        else if (isRc4) { family = 'RC4'; primitive = Primitive.STREAM_CIPHER; }
+        else if (isRabbit) { family = 'Rabbit'; primitive = Primitive.STREAM_CIPHER; }
+
+        const f = new CryptoFinding({
+          assetType: AssetType.ALGORITHM,
+          name: family,
+          algorithmFamily: family,
+          primitive,
+          filePath,
+          line: lineNum,
+          sourceContext: 'live',
+        });
+        f.addEvidence(new Evidence({
+          source: 'ast',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `CryptoJS.${cipherType} call (regex fallback)`,
+          rawConfidence: 0.55,
+          filePath,
+          line: lineNum,
+        }));
+        findings.push(f);
+      }
+      if (/CryptoJS\.(SHA256|SHA512|SHA384|SHA224|SHA1|SHA3|MD5|RIPEMD160)\s*\(/i.test(l)) {
+        const m = l.match(/CryptoJS\.(SHA256|SHA512|SHA384|SHA224|SHA1|SHA3|MD5|RIPEMD160)/i);
+        const hashName = m ? m[1].toUpperCase() : 'SHA256';
+        const parsed = parseAlgorithmIdentifier(hashName) || { family: hashName };
+        const f = new CryptoFinding({
+          assetType: AssetType.ALGORITHM,
+          name: parsed.family || hashName,
+          algorithmFamily: parsed.family || hashName,
+          primitive: Primitive.HASH,
+          filePath,
+          line: lineNum,
+          sourceContext: 'live',
+        });
+        f.addEvidence(new Evidence({
+          source: 'ast',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `CryptoJS.${hashName} call (regex fallback)`,
+          rawConfidence: 0.55,
+          filePath,
+          line: lineNum,
+        }));
+        findings.push(f);
+      }
+      if (/CryptoJS\.Hmac/i.test(l)) {
+        const m = l.match(/CryptoJS\.Hmac([A-Za-z0-9]+)/i);
+        const hashPart = m ? m[1].toUpperCase() : 'SHA256';
+        const f = new CryptoFinding({
+          assetType: AssetType.ALGORITHM,
+          name: 'HMAC',
+          algorithmFamily: 'HMAC',
+          primitive: Primitive.MAC,
+          mode: hashPart,
+          filePath,
+          line: lineNum,
+          sourceContext: 'live',
+        });
+        f.addEvidence(new Evidence({
+          source: 'ast',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `CryptoJS.Hmac call (regex fallback)`,
+          rawConfidence: 0.55,
+          filePath,
+          line: lineNum,
+        }));
+        findings.push(f);
+      }
+      if (/CryptoJS\.(PBKDF2|EvpKDF)\s*\(/i.test(l)) {
+        const m = l.match(/CryptoJS\.(PBKDF2|EvpKDF)/i);
+        const kdfName = m ? m[1].toUpperCase() : 'PBKDF2';
+        const f = new CryptoFinding({
+          assetType: AssetType.ALGORITHM,
+          name: kdfName,
+          algorithmFamily: kdfName,
+          primitive: Primitive.KDF,
+          filePath,
+          line: lineNum,
+          sourceContext: 'live',
+        });
+        f.addEvidence(new Evidence({
+          source: 'ast',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `CryptoJS.${kdfName} call (regex fallback)`,
+          rawConfidence: 0.55,
+          filePath,
+          line: lineNum,
+        }));
+        findings.push(f);
+      }
     }
   });
   return findings;

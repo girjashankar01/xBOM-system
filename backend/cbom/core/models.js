@@ -39,6 +39,7 @@ class CryptoFinding {
     filePath = '',
     line = 0,
     contextCategory = 'unknown',
+    sourceContext = 'live',
   }) {
     this.assetType = assetType;
     this.name = name;
@@ -53,6 +54,7 @@ class CryptoFinding {
 
     this.callContext = null;             // reserved for future data-flow chain — do not populate yet
     this.contextCategory = contextCategory;
+    this.sourceContext = sourceContext;   // "live" | "comment"
 
     this.nistQuantumLevel = null;        // filled by analysis/quantumRisk.js
     this.quantumRisk = null;             // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
@@ -90,6 +92,7 @@ class CryptoFinding {
       filePath: this.filePath,
       line: this.line,
       contextCategory: this.contextCategory,
+      sourceContext: this.sourceContext,
       confidence: this.confidence,
       quantumRisk: this.quantumRisk,
       evidence: this.evidence.map((e) => ({

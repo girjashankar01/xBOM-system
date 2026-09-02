@@ -78,6 +78,12 @@ const EvidenceSource = Object.freeze({
   LLM: 'llm',
 });
 
+// Source context: live executable code vs. code comments / tutorial snippets
+const SourceContext = Object.freeze({
+  LIVE: 'live',
+  COMMENT: 'comment',
+});
+
 // NIST PQC posture, 0 (broken today) through 5 (PQC-native). Priority
 // signal for analysis/quantumRisk.js, not a date prediction.
 const NistQuantumLevel = Object.freeze({
@@ -96,5 +102,6 @@ module.exports = {
   ProtocolType,
   ContextCategory,
   EvidenceSource,
+  SourceContext,
   NistQuantumLevel,
 };

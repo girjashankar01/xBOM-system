@@ -77,6 +77,7 @@ function buildCustomProperties(f) {
   if (f.nistQuantumLevel != null) props.push({ name: 'cbomtool:nistQuantumLevel', value: String(f.nistQuantumLevel) });
   if (f.confidence != null) props.push({ name: 'cbomtool:confidence', value: String(f.confidence) });
   if (f.contextCategory) props.push({ name: 'cbomtool:context', value: f.contextCategory });
+  if (f.sourceContext) props.push({ name: 'cbomtool:sourceContext', value: f.sourceContext });
   if (f.fingerprint) props.push({ name: 'cbomtool:fingerprint', value: f.fingerprint });
   for (const ev of f.evidence || []) {
     props.push({ name: `cbomtool:evidence:${ev.source}`, value: `${ev.evidenceClass} — ${ev.detail}` });

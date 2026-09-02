@@ -247,4 +247,130 @@ describe('CBOM Correctness & Schema Verification', () => {
     // Unknown context downweights correctly
     expect(score(explicitEvidence, 'unknown')).toBe(0.693);
   });
+
+  test('validates sourceContext requirement and distinguishes live vs. comment nodes', () => {
+    const liveFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      algorithmFamily: 'AES',
+      primitive: Primitive.BLOCK_CIPHER,
+      sourceContext: 'live',
+    });
+    expect(validateFinding(liveFinding).filter(i => i.level === 'error')).toHaveLength(0);
+
+    const commentFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      algorithmFamily: 'AES',
+      primitive: Primitive.BLOCK_CIPHER,
+      sourceContext: 'comment',
+    });
+    expect(validateFinding(commentFinding).filter(i => i.level === 'error')).toHaveLength(0);
+
+    const invalidContext = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      algorithmFamily: 'AES',
+      primitive: Primitive.BLOCK_CIPHER,
+      sourceContext: 'invalid-source-context',
+    });
+    const issues = validateFinding(invalidContext);
+    expect(issues.some(i => i.level === 'error' && i.field === 'sourceContext')).toBe(true);
+  });
+
+  test('detects jsonwebtoken / jose JWA algorithms (RS256, ES256, HS256, and insecure none)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbom-jwt-fixture-'));
+    try {
+      const code = `
+        const jwt = require('jsonwebtoken');
+        const token1 = jwt.sign({ sub: 'user1' }, 'secret', { algorithm: 'HS256' });
+        const token2 = jwt.sign({ sub: 'user2' }, key, { algorithm: 'RS256' });
+        const token3 = jwt.sign({ sub: 'user3' }, key, { algorithm: 'ES256' });
+        const token4 = jwt.sign({ sub: 'user4' }, '', { algorithm: 'none' });
+        const verified = jwt.verify(token1, 'secret', { algorithms: ['RS256', 'none'] });
+      `;
+      fs.writeFileSync(path.join(dir, 'jwt-test.js'), code);
+
+      const result = await runPipeline(dir, { skipLlm: true });
+      expect(result.validation.errors).toHaveLength(0);
+
+      const families = result.findings.map(f => f.algorithmFamily);
+      expect(families).toContain('HMAC');
+      expect(families).toContain('RSA');
+      expect(families).toContain('ECDSA');
+      expect(families).toContain('none');
+
+      // Check all have signature primitive
+      const jwtFindings = result.findings.filter(f => f.filePath.endsWith('jwt-test.js'));
+      expect(jwtFindings.every(f => f.primitive === 'signature')).toBe(true);
+      expect(jwtFindings.every(f => f.sourceContext === 'live')).toBe(true);
+
+      // Check that "none" algorithm is flagged as insecure / L0_BROKEN
+      const noneFinding = jwtFindings.find(f => f.algorithmFamily === 'none');
+      expect(noneFinding).toBeDefined();
+      expect(noneFinding.parameterSet).toContain('none');
+      expect(noneFinding.nistQuantumLevel).toBe(NistQuantumLevel.L0_BROKEN);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('detects CryptoJS algorithms (modern AES/SHA512/PBKDF2 vs. legacy DES/3DES/RC4/MD5 with elevated risk)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbom-cryptojs-fixture-'));
+    try {
+      const code = `
+        const CryptoJS = require('crypto-js');
+        const aes = CryptoJS.AES.encrypt('msg', 'pass');
+        const des = CryptoJS.DES.encrypt('msg', 'pass');
+        const tripleDes = CryptoJS.TripleDES.encrypt('msg', 'pass');
+        const rc4 = CryptoJS.RC4.encrypt('msg', 'pass');
+        const md5 = CryptoJS.MD5('msg');
+        const sha512 = CryptoJS.SHA512('msg');
+        const hmac = CryptoJS.HmacSHA256('msg', 'secret');
+        const kdf = CryptoJS.PBKDF2('pass', 'salt');
+      `;
+      fs.writeFileSync(path.join(dir, 'cryptojs-test.js'), code);
+
+      const result = await runPipeline(dir, { skipLlm: true });
+      expect(result.validation.errors).toHaveLength(0);
+
+      const findings = result.findings.filter(f => f.filePath.endsWith('cryptojs-test.js'));
+      expect(findings.every(f => f.sourceContext === 'live')).toBe(true);
+
+      const findFamily = fam => findings.find(f => f.algorithmFamily === fam);
+
+      // Modern algorithms -> LOW risk
+      const aesFinding = findFamily('AES');
+      expect(aesFinding).toBeDefined();
+      expect(aesFinding.primitive).toBe('block-cipher');
+
+      const sha512Finding = findFamily('SHA-512');
+      expect(sha512Finding).toBeDefined();
+      expect(sha512Finding.primitive).toBe('hash');
+      expect(sha512Finding.quantumRisk).toBe('LOW');
+
+      const pbkdf2Finding = findFamily('PBKDF2');
+      expect(pbkdf2Finding).toBeDefined();
+      expect(pbkdf2Finding.primitive).toBe('kdf');
+      expect(pbkdf2Finding.quantumRisk).toBe('LOW');
+
+      // Legacy/broken algorithms -> L0_BROKEN / elevated severity
+      const desFinding = findFamily('DES');
+      expect(desFinding).toBeDefined();
+      expect(desFinding.primitive).toBe('block-cipher');
+      expect(desFinding.nistQuantumLevel).toBe(NistQuantumLevel.L0_BROKEN);
+      expect(['CRITICAL', 'HIGH']).toContain(desFinding.quantumRisk);
+
+      const rc4Finding = findFamily('RC4');
+      expect(rc4Finding).toBeDefined();
+      expect(rc4Finding.primitive).toBe('stream-cipher');
+      expect(rc4Finding.nistQuantumLevel).toBe(NistQuantumLevel.L0_BROKEN);
+      expect(['CRITICAL', 'HIGH']).toContain(rc4Finding.quantumRisk);
+
+      const md5Finding = findFamily('MD5');
+      expect(md5Finding).toBeDefined();
+      expect(md5Finding.primitive).toBe('hash');
+      expect(md5Finding.nistQuantumLevel).toBe(NistQuantumLevel.L0_BROKEN);
+      expect(['CRITICAL', 'HIGH']).toContain(md5Finding.quantumRisk);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
