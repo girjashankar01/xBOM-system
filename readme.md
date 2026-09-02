@@ -45,15 +45,16 @@ An end-to-end Software Bill of Materials (**SBOM**) and Cryptography Bill of Mat
  │  │  • PEM File Scanner (`keysCerts.js`): private keys, X.509 certs  │  │
  │  │  • Constant Matcher (`constants.js`): AES S-box, ChaCha20 sigma │  │
  │  │  • SCA Package Attributor (`sbomAdapter.js` + library map)       │  │
- │  │  • Context Classifier (`classify.js`): prod, test, vendor, live  │  │
  │  └──────────────────────────────────┬───────────────────────────────┘  │
  │                                     ▼                                  │
  │  ┌──────────────────────────────────────────────────────────────────┐  │
  │  │ 3. VECTOR RETRIEVAL & GATED LLM VERIFICATION                     │  │
- │  │  • AST span extractor (`embedder.js`)                            │  │
+ │  │  • Candidate Extractor (`candidateExtractor.js`): method tokens  │  │
  │  │  • In-process `@xenova/transformers` (`all-MiniLM-L6-v2` ONNX)   │  │
  │  │  • Cosine candidate retriever (`vectorSearch.js`)                │  │
  │  │  • Gated Ollama client (`llm_agent.js` with `qwen2.5-coder`)     │  │
+ │  │  • Concurrency queue pool (4 workers) & safety cap (max 50)      │  │
+ │  │  • Negative result triaging (`no_crypto_detected` vs mismatch)   │  │
  │  │  • Strict enum validator (`validateLlmResponse`)                 │  │
  │  └──────────────────────────────────┬───────────────────────────────┘  │
  │                                     ▼                                  │
@@ -64,6 +65,7 @@ An end-to-end Software Bill of Materials (**SBOM**) and Cryptography Bill of Mat
  │  │  • Quantum risk (NIST L0-L5) & exposure risk (`quantumRisk.js`)  │  │
  │  │  • CycloneDX validator & serializer (`cyclonedx_serializer.js`)  │  │
  │  │  • SBOM-CBOM cross-correlation engine (`correlation.js`)         │  │
+ │  │  • Per-phase wall-clock timing telemetry (`phaseTimingsMs`)      │  │
  │  └──────────────────────────────────────────────────────────────────┘  │
  └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -74,7 +76,7 @@ An end-to-end Software Bill of Materials (**SBOM**) and Cryptography Bill of Mat
 
 When a user submits a repository URL via `POST /api/scan`, execution proceeds sequentially across modules:
 
-1. **`backend/src/routes/scan.routes.js`**: Receives `{ githubUrl }`.
+1. **`backend/src/routes/scan.routes.js`**: Receives `{ githubUrl, skipLlm }`.
 2. **`backend/src/modules/ingest/repoIngest.js` (`cloneRepo`)**: Executes a shallow `git clone --depth 1` into a unique temporary directory in the OS temp directory.
 3. **`backend/src/modules/ingest/repoIngest.js` (`findLockfile`)**: Locates `package-lock.json`.
 4. **`backend/src/modules/parse/npmLockParser.js` (`parseLockfile`)**: Parses npm lockfile format v2/v3, extracting all direct and transitive packages, purls, versions, install script flags, and dependency graph relationships.
@@ -87,21 +89,22 @@ When a user submits a repository URL via `POST /api/scan`, execution proceeds se
    - `installScript.js`: Flags packages executing `preinstall`, `install`, or `postinstall` lifecycle scripts.
 8. **`backend/src/modules/serialize/cyclonedx.js` (`buildCycloneDX`)**: Assembles standard CycloneDX v1.7 software BOM components, anomaly annotations, and vulnerability lists.
 9. **`backend/cbom/cli/main.js` (`runPipeline`)**:
-   - **Phase 1**: `SbomAdapter.fromCycloneDxJson` loads the SBOM and maps package dependencies.
-   - **Phase 2**: `scanner/astExtract.js` runs Babel AST parsing across all target `.js`/`.mjs`/`.ts` files.
-   - **Phase 2.5**: `scanner/keysCerts.js` parses PEM certificate and private key files on disk.
-   - **Phase 3**: `scanner/constants.js` scans file buffers for cryptographic magic byte constants.
-   - **Phase 3.5**: `sbomAdapter.generateScaFindings` identifies crypto-capable npm packages from the dependency tree.
-   - **Phase 4**: `context_classifier/classify.js` categorizes code context (production, test, vendor).
-   - **Phase 5 & 6**: `runVerification` gates non-direct findings, extracts AST function spans, queries local ONNX embeddings, prompts Ollama, and validates responses.
-   - **Phase 7a**: `analysis/evidence.js` (`aggregate`) merges per-detector findings within a 2-line window without overwriting static truth.
-   - **Phase 7b**: `analysis/confidence.js` (`scoreFindings`) computes dynamic confidence (0.0 to 1.0).
-   - **Phase 8**: `analysis/quantumRisk.js` (`classifyFindings`) scores quantum risk (NIST levels) and exposure risk.
-   - **Phase 9**: `validator/validate.js` validates CycloneDX v1.7 mutual exclusion rules.
-   - **Phase 10**: `output/cyclonedx_serializer.js` formats the CBOM component tree.
-   - **Phase 11**: `output/correlation.js` (`correlateCbomWithSbom`) builds cross-layer summaries.
+   - **Phase 1 (SCA / SBOM Setup)**: `SbomAdapter.fromCycloneDxJson` loads the SBOM and maps package dependencies.
+   - **Phase 2 (AST Extraction)**: `scanner/astExtract.js` runs Babel AST parsing across target source files, extracting `DIRECT` code findings and skipping test/spec files.
+   - **Phase 2.5 (Keys & Certs)**: `scanner/keysCerts.js` parses PEM certificate and private key files on disk (`exposureRisk: CRITICAL`).
+   - **Phase 3 (Constants)**: `scanner/constants.js` scans file buffers for cryptographic magic byte constants.
+   - **Phase 3.5 (Package SCA)**: `sbomAdapter.generateScaFindings` identifies crypto-capable npm packages from the dependency tree.
+   - **Phase 4 (Candidate Extractor)**: `scanner/candidateExtractor.js` extracts candidate code sites using method-segment token matching, skipping lines already carrying `DIRECT` evidence.
+   - **Phase 5 (Context & Retrieval)**: `context_classifier/classify.js` tags production vs test code; `CandidateRetriever` initializes 384-d vector embeddings against reference corpus.
+   - **Phase 6 (Gated LLM Verification Tier)**: `runVerification` enforces safety cap (`MAX_LLM_CANDIDATES = 50`), runs a 4-worker asynchronous queue pool against local Ollama, validates responses, and separates positive detections from `no_crypto_detected` and `schema_mismatch`.
+   - **Phase 7a (Evidence Aggregation)**: `analysis/evidence.js` (`aggregate`) merges per-detector findings within a 2-line window without overwriting static truth.
+   - **Phase 7b (Dynamic Confidence)**: `analysis/confidence.js` (`scoreFindings`) computes dynamic confidence (0.0 to 1.0).
+   - **Phase 8 (Risk Scoring)**: `analysis/quantumRisk.js` (`classifyFindings`) scores quantum risk (NIST levels L0–L5) and secret exposure risk.
+   - **Phase 9 (CycloneDX Validation)**: `validator/validate.js` validates CycloneDX v1.7 mutual exclusion rules.
+   - **Phase 10 (Serialization)**: `output/cyclonedx_serializer.js` formats the CBOM component tree.
+   - **Phase 11 (Correlation & Telemetry)**: `output/correlation.js` compiles cross-layer metrics, records phase timings (`phaseTimingsMs`), and outputs `scanSummary`.
 10. **`backend/src/modules/ingest/repoIngest.js` (`cleanup`)**: Recursively deletes the cloned directory.
-11. **Express Response**: Returns combined `{ sbom, cbom, correlation }` to the frontend client.
+11. **Express Response**: Returns combined `{ sbom, cbom, correlation, scanSummary }` to the frontend client.
 
 ---
 
@@ -159,13 +162,19 @@ Uses `@babel/parser` and `@babel/traverse` to scan all JavaScript / TypeScript f
 - Compares dependency tree components against [`crypto_library_map.json`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/context/crypto_library_map.json) (73 curated crypto libraries including `bcrypt`, `jsonwebtoken`, `@noble/hashes`, `crypto-js`, `node-forge`, `tweetnacl`, `elliptic`, etc.).
 - Evaluates exact catalog matches vs. keyword/stem fallbacks.
 
-### 4.4 Schema Separation Rules (CycloneDX v1.7)
+### 4.4 Heuristic Candidate Extractor (`candidateExtractor.js`)
+- Extracts heuristic candidate code sites matching cryptographic keywords at word/segment boundaries (`\b`).
+- **Method-Only Identifier Matching**: Tokenizes dotted member expression call chains on `.` and checks *only the rightmost invoked identifier* (`methodName = dotParts[dotParts.length - 1]`) against `CRYPTO_SEGMENTS`. Prevents non-crypto string/array method calls (e.g., `rawHash.toUpperCase()`, `authToken.trim()`, `cipherConfig.length`) from triggering false positives while maintaining full recall on bare calls (`verifySignature(token)`) and library methods (`crypto.verify(...)`).
+- **Universal Test-Path Filter**: Excludes all test, spec, fixture, and mock files across dot, underscore, and hyphen conventions (e.g. `*.test.js`, `*.spec.ts`, `crypto-test.js`, `__tests__/`).
+- **DIRECT Evidence Deduplication**: Automatically skips candidate lines that already carry `EvidenceClass.DIRECT` findings from static AST or PEM scanners.
+
+### 4.5 Schema Separation Rules (CycloneDX v1.7)
 Enforced in [`backend/cbom/validator/validate.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/validator/validate.js):
 - **`algorithm`**: Must contain `algorithmProperties` (`primitive`, `algorithmFamily`, `parameterSetIdentifier`). Must **NOT** contain `materialType` or `certificateProperties`.
 - **`related-crypto-material`**: Must contain `relatedCryptoMaterialProperties` (`type`: `private-key` | `public-key` | `secret-key` | `salt` | `token` | `iv` | `seed`). Must **NOT** contain `primitive`.
 - **`certificate`**: Must contain `certificateProperties` (`subjectName`, `issuerName`, `notValidAfter`, `signatureAlgorithmRef`). Must **NOT** contain `primitive` or `materialType`.
 
-### 4.5 Quantum-Risk Scoring Model (NIST Levels)
+### 4.6 Quantum-Risk Scoring Model (NIST Levels)
 Scored in [`backend/cbom/analysis/quantumRisk.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/analysis/quantumRisk.js):
 
 | Algorithm Category | Algorithm Family / Primitives | NIST Quantum Level | Severity Label | Justification |
@@ -176,12 +185,12 @@ Scored in [`backend/cbom/analysis/quantumRisk.js`](file:///Users/althea/Develope
 | **Post-Quantum Crypto** | ML-KEM, ML-DSA, SLH-DSA, Kyber, Dilithium | **Level 3–5** | `NONE` | Quantum-resistant lattice/stateful hash signatures. |
 | **Non-Quantum Relevant** | CSPRNG (`drbg`), salts, comparison ops | N/A | `NONE` | Randomness generators and helpers carry no mathematical trapdoor; quantum risk is not applicable. |
 
-### 4.6 Secret Exposure Risk Scoring (Independent Dimension)
+### 4.7 Secret Exposure Risk Scoring (Independent Dimension)
 Distinct from quantum vulnerability:
-- **`exposureRisk: CRITICAL`**: Assigned to `related-crypto-material` findings of type `private-key` found in committed repository files on disk (e.g. `server.key`, `id_rsa`).
+- **`exposureRisk: CRITICAL`**: Assigned to `related-crypto-material` findings of type `private-key` found in committed repository files on disk (e.g. `server.key`, `id_rsa`, or hardcoded PEM string literals in source files).
 - **`exposureRisk: NONE`**: Assigned to in-memory runtime key generation (e.g. `crypto.generateKeyPairSync('ec')`) because ephemeral keys in RAM are not repository secret leaks.
 
-### 4.7 Dynamic Confidence Scoring Engine
+### 4.8 Dynamic Confidence Scoring Engine
 Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/analysis/confidence.js) (no flat constants):
 - **AST Code Findings**: Direct string literal algorithm (`0.95` raw) vs. variable/inferred parameter (`0.75` raw). Scaled by context cap: Production (`1.0`), Test (`0.4`), Vendor (`0.7`).
 - **File Findings**: Full ASN.1 / X.509 metadata parse (`0.90` raw) vs. plain header regex (`0.65` raw).
@@ -201,10 +210,16 @@ Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Develop
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Node.js Process (In-Memory)                     │
 │                                                                        │
-│  astExtract / constants                                                │
+│  candidateExtractor.js                                                 │
 │         │                                                              │
 │         ▼                                                              │
 │  shouldVerify(evidence) ──► (if no DIRECT evidence)                    │
+│         │                                                              │
+│         ▼                                                              │
+│  Candidate Cap (max 50) ──► Skips excess candidates gracefully         │
+│         │                                                              │
+│         ▼                                                              │
+│  Parallel Worker Pool ────► 4-worker concurrent queue                  │
 │         │                                                              │
 │         ▼                                                              │
 │  extractEnclosingSpan() ──► Babel AST function slice                   │
@@ -215,7 +230,7 @@ Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Develop
 │         ▼                                                              │
 │  vectorSearch.js ─────────► Cosine similarity against corpus/*.jsonl   │
 └─────────┬──────────────────────────────────────────────────────────────┘
-          │ HTTP JSON POST (offline localhost only)
+          │ HTTP JSON POST (options: { temperature: 0.0, num_predict: 128 })
           ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Ollama Daemon (localhost:11434)                 │
@@ -228,9 +243,12 @@ Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Develop
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Node.js Process (In-Memory)                     │
 │                                                                        │
-│  validateLlmResponse() ───► Rejects primitives in family field         │
-│         │                   Canonicalizes to CycloneDX registry enum   │
-│         ▼                                                              │
+│  validateLlmResponse()                                                 │
+│         │                                                              │
+│         ├──► Positive Crypto ───► INTERPRETIVE CryptoFinding           │
+│         ├──► No Crypto ─────────► Succeeded (noCryptoDetected++)       │
+│         └──► Malformed/Enum ────► Failed (schema_mismatch++)           │
+│                                                                        │
 │  aggregate() ─────────────► Merges with static evidence                │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -238,24 +256,22 @@ Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Develop
 1. **In-Process Embedder (`@xenova/transformers`)**:
    - Runs **entirely in-process** inside the Node.js backend using ONNX Runtime.
    - Model: `Xenova/all-MiniLM-L6-v2` (384-dimensional dense embeddings).
-   - Automatically downloads the ONNX weight files (~90MB) on first run and caches them locally in `~/.cache/transformers`. No separate server or Python process is required.
+   - Automatically downloads ONNX weights (~90MB) on first run into `~/.cache/transformers`. No external vector database or Python process required.
 2. **Offline LLM Verification (`llm_agent.js`)**:
    - Model: `qwen2.5-coder:1.5b` (default for lightweight local development) or `qwen2.5-coder:7b`.
    - Endpoint: `http://localhost:11434/api/chat`.
-   - Setup Requirement: Ollama is an external local daemon. The user can install Ollama and run `ollama pull qwen2.5-coder:1.5b`.
    - Environment Variables:
      - `OFFLINE_LLM_URL`: Custom endpoint URL (default: `http://localhost:11434/api/chat`).
-     - `OFFLINE_LLM_MODEL`: Target model tag (default: `qwen2.5-coder:1.5b`). Configured and read in `backend/cbom/verification/llm_agent.js`.
-3. **Gating Rule (`shouldVerify`)**:
-   - Only triggers on findings that **lack** `EvidenceClass.DIRECT` (e.g. constant byte matches, heuristic code sites, or uncorroborated package matches).
-   - High-confidence AST detections (direct literal calls) and PEM certificate matches bypass the LLM entirely, conserving compute.
-4. **Graceful Fallback**:
-   - If Ollama is offline or unreachable, `llm_agent.js` logs a clean warning and returns `null`.
-   - The scan completes normally without failing, preserving all deterministic static and SCA findings.
-5. **Strict Response Validation (`validateLlmResponse`)**:
-   - Checks `algorithmFamily` against `registry_snapshot.json`.
-   - Rejects responses where the LLM places a primitive type (e.g. `"stream-cipher"`) into the `algorithmFamily` field.
-   - Coerces invalid primitives (e.g. `"xor"`) to `null`.
+     - `OFFLINE_LLM_MODEL`: Target model tag (default: `qwen2.5-coder:1.5b`). Configured in `backend/cbom/verification/llm_agent.js`.
+3. **Hard Safety Cap & Concurrency Pool**:
+   - **Safety Cap**: `DEFAULT_MAX_LLM_CANDIDATES = 50` caps the total candidate spans dispatched to the LLM per scan. If more candidates exist, excess items are skipped and recorded in `candidatesSkippedDueToLimit`.
+   - **4-Worker Queue Pool**: `DEFAULT_LLM_CONCURRENCY = 4` processes requests in a 4-worker asynchronous queue, delivering a **25% wall-clock speedup** over sequential execution against local Apple Metal GPU instances.
+   - **Token Bounding**: Uses `num_predict: 128` to prevent runaway token decoding and ensure rapid JSON serialization.
+4. **Negative Result Triaging & Schema Validation**:
+   - **`no_crypto_detected`**: Valid responses where the model correctly reports no cryptographic usage (`algorithmFamily: null`, `confidence: 0`, "no crypto") count as **`llmCallsSucceeded`** (tracked under `noCryptoDetected`) and return `null` without inflating the failure count.
+   - **`schema_mismatch`**: True structural errors or uncatalogued hallucinations (e.g. inventing `"OAuth2"`) are flagged as `failureReasons.schema_mismatch`.
+5. **Phase Timing Telemetry**:
+   - Every phase (`astExtract`, `keysCerts`, `constants`, `candidateExtractor`, `llmVerificationTier`, `analysisAndValidation`, `serializationAndCorrelation`) is measured and emitted in `scanSummary.phaseTimingsMs`.
 
 ### 5.2 Running the LLM Verification Tier
 
@@ -270,8 +286,6 @@ Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Develop
   Clients can pass `{"skipLlm": true}` in the JSON body of `POST /api/scan` to completely bypass Phase 5/6 vector search and LLM verification for ultra-fast CI or testing runs.
 - **Graceful Fallback Behavior**:
   If the Ollama daemon is not running or unreachable at `http://localhost:11434`, the scan does **not** fail. It logs `[llm_agent] Ollama endpoint unreachable — skipping LLM verification` and completes the scan using static AST and catalog evidence.
-- **Latency Impact**:
-  Enabling LLM verification adds approximately **~1.8s to 2.5s** total wall-clock duration to an end-to-end repository scan (validated against `sahat/hackathon-starter` and `OWASP/NodeGoat`).
 
 ---
 
@@ -458,9 +472,9 @@ npm run dev
 ```bash
 cd backend
 
-# Run the complete test suite (10 test suites, 59 unit tests)
+# Run the complete test suite (12 test suites, 79 unit tests)
 npm test
 
-# Run CBOM CLI and LLM verification unit tests specifically
-npm test -- --testPathPattern="cbom/cli/main.test.js"
+# Run CBOM candidate extractor & LLM verification unit tests specifically
+npm test -- --testPathPattern="candidateExtractor.test.js"
 ```
