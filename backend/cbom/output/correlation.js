@@ -78,34 +78,45 @@ function findCompoundingRisk(correlated, { anomaliesByPurl = new Map() } = {}) {
  * Aggregates both quantumRisk and exposureRisk dimensions along with package attribution.
  */
 function buildCombinedRiskSummary(findings, correlated, compoundingResult) {
-  let critical = 0, high = 0, medium = 0, low = 0;
-  let exposureCritical = 0, exposureHigh = 0, exposureMedium = 0, exposureLow = 0;
+  let critical = 0, high = 0, medium = 0, low = 0, none = 0;
+  let exposureCritical = 0, exposureHigh = 0, exposureMedium = 0, exposureLow = 0, exposureNone = 0;
   const byPrimitive = {};
 
   for (const f of findings) {
-    if (f.quantumRisk === 'CRITICAL') critical++;
-    else if (f.quantumRisk === 'HIGH') high++;
-    else if (f.quantumRisk === 'MEDIUM') medium++;
-    else if (f.quantumRisk === 'LOW') low++;
+    const qRisk = (f.quantumRisk || '').toUpperCase();
+    if (qRisk === 'CRITICAL') critical++;
+    else if (qRisk === 'HIGH') high++;
+    else if (qRisk === 'MEDIUM') medium++;
+    else if (qRisk === 'LOW') low++;
+    else none++;
 
-    if (f.exposureRisk === 'CRITICAL') exposureCritical++;
-    else if (f.exposureRisk === 'HIGH') exposureHigh++;
-    else if (f.exposureRisk === 'MEDIUM') exposureMedium++;
-    else if (f.exposureRisk === 'LOW') exposureLow++;
+    const eRisk = (f.exposureRisk || '').toUpperCase();
+    if (eRisk === 'CRITICAL') exposureCritical++;
+    else if (eRisk === 'HIGH') exposureHigh++;
+    else if (eRisk === 'MEDIUM') exposureMedium++;
+    else if (eRisk === 'LOW') exposureLow++;
+    else exposureNone++;
 
-    if (f.primitive) byPrimitive[f.primitive] = (byPrimitive[f.primitive] || 0) + 1;
+    if (f.primitive) {
+      byPrimitive[f.primitive] = (byPrimitive[f.primitive] || 0) + 1;
+    }
   }
+
+  const attributedCount = correlated.filter((c) => c.packageContext != null).length;
+  const firstPartyCount = correlated.filter((c) => c.packageContext == null).length;
 
   return {
     totalFindings: findings.length,
-    critical, high, medium, low,
-    quantumRisk: { critical, high, medium, low },
-    exposureRisk: { critical: exposureCritical, high: exposureHigh, medium: exposureMedium, low: exposureLow },
+    critical, high, medium, low, none,
+    quantumRisk: { critical, high, medium, low, none },
+    exposureRisk: { critical: exposureCritical, high: exposureHigh, medium: exposureMedium, low: exposureLow, none: exposureNone },
     byPrimitive,
-    attributedToPackage: correlated.filter((c) => c.packageContext).length,
-    firstPartySource: correlated.filter((c) => !c.packageContext).length,
-    compoundingCount: compoundingResult.compounding.length,
-    compoundingPackages: compoundingResult.compounding.map((p) => `${p.name}@${p.version}`),
+    attributedToPackage: attributedCount,
+    firstPartySource: firstPartyCount,
+    compoundingCount: (compoundingResult && compoundingResult.compounding) ? compoundingResult.compounding.length : 0,
+    compoundingPackages: (compoundingResult && compoundingResult.compounding)
+      ? compoundingResult.compounding.map((p) => `${p.name}@${p.version}`)
+      : [],
   };
 }
 

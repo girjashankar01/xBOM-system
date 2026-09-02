@@ -511,4 +511,129 @@ describe('CBOM Correctness & Schema Verification', () => {
     expect(hashFinding.quantumRisk).toBe('LOW');
     expect(aesFinding.quantumRisk).toBe('LOW');
   });
+
+  test('buildCombinedRiskSummary accurately aggregates 30+ findings across all severity buckets and counts', () => {
+    const { buildCombinedRiskSummary } = require('../output/correlation');
+
+    const syntheticFindings = [];
+    const syntheticCorrelated = [];
+
+    const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NONE'];
+    const exposureSeverities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NONE'];
+    const primitives = [Primitive.HASH, Primitive.MAC, Primitive.BLOCK_CIPHER, Primitive.KDF, Primitive.DRBG, null];
+
+    let expectedCritical = 0, expectedHigh = 0, expectedMedium = 0, expectedLow = 0, expectedNone = 0;
+    let expectedExpCrit = 0, expectedExpHigh = 0, expectedExpMed = 0, expectedExpLow = 0, expectedExpNone = 0;
+    const expectedByPrimitive = {};
+    let expectedAttributed = 0;
+    let expectedFirstParty = 0;
+
+    for (let i = 0; i < 35; i++) {
+      const qRisk = severities[i % severities.length];
+      const eRisk = exposureSeverities[i % exposureSeverities.length];
+      const prim = primitives[i % primitives.length];
+      const isAttributed = i % 3 === 0;
+
+      if (qRisk === 'CRITICAL') expectedCritical++;
+      else if (qRisk === 'HIGH') expectedHigh++;
+      else if (qRisk === 'MEDIUM') expectedMedium++;
+      else if (qRisk === 'LOW') expectedLow++;
+      else expectedNone++;
+
+      if (eRisk === 'CRITICAL') expectedExpCrit++;
+      else if (eRisk === 'HIGH') expectedExpHigh++;
+      else if (eRisk === 'MEDIUM') expectedExpMed++;
+      else if (eRisk === 'LOW') expectedExpLow++;
+      else expectedExpNone++;
+
+      if (prim) expectedByPrimitive[prim] = (expectedByPrimitive[prim] || 0) + 1;
+      if (isAttributed) expectedAttributed++;
+      else expectedFirstParty++;
+
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: `Algo-${i}`,
+        primitive: prim,
+        filePath: isAttributed ? `node_modules/pkg-${i}/index.js` : `src/file-${i}.js`,
+        line: i + 1,
+      });
+      f.quantumRisk = qRisk;
+      f.exposureRisk = eRisk;
+
+      syntheticFindings.push(f);
+      syntheticCorrelated.push({
+        findingId: f.findingId,
+        name: f.name,
+        packageContext: isAttributed ? { name: `pkg-${i}`, version: '1.0.0', purl: `pkg:npm/pkg-${i}@1.0.0` } : null,
+      });
+    }
+
+    const summary = buildCombinedRiskSummary(syntheticFindings, syntheticCorrelated, { compounding: [] });
+
+    expect(summary.totalFindings).toBe(35);
+    expect(summary.quantumRisk.critical).toBe(expectedCritical);
+    expect(summary.quantumRisk.high).toBe(expectedHigh);
+    expect(summary.quantumRisk.medium).toBe(expectedMedium);
+    expect(summary.quantumRisk.low).toBe(expectedLow);
+    expect(summary.quantumRisk.none).toBe(expectedNone);
+
+    expect(summary.exposureRisk.critical).toBe(expectedExpCrit);
+    expect(summary.exposureRisk.high).toBe(expectedExpHigh);
+    expect(summary.exposureRisk.medium).toBe(expectedExpMed);
+    expect(summary.exposureRisk.low).toBe(expectedExpLow);
+    expect(summary.exposureRisk.none).toBe(expectedExpNone);
+
+    expect(summary.attributedToPackage).toBe(expectedAttributed);
+    expect(summary.firstPartySource).toBe(expectedFirstParty);
+    expect(summary.byPrimitive).toEqual(expectedByPrimitive);
+  });
+
+  test('scores committed private key files as exposureRisk: CRITICAL', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const fileKeyFinding = new CryptoFinding({
+      assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+      name: 'private-key',
+      materialType: MaterialType.PRIVATE_KEY,
+      filePath: 'artifacts/cert/server.key',
+      line: 1,
+    });
+    fileKeyFinding.addEvidence(new Evidence({
+      source: 'keysCerts',
+      evidenceClass: EvidenceClass.DIRECT,
+      detail: 'PEM header match (private-key)',
+      filePath: 'artifacts/cert/server.key',
+      line: 1,
+    }));
+
+    classifyFindings([fileKeyFinding]);
+    expect(fileKeyFinding.exposureRisk).toBe('CRITICAL');
+  });
+
+  test('scores in-memory runtime generated private keys as exposureRisk: NONE while preserving quantumRisk', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const runtimeKeyFinding = new CryptoFinding({
+      assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+      algorithmFamily: 'EC',
+      name: 'private-key',
+      materialType: MaterialType.PRIVATE_KEY,
+      parameterSet: 'P-256',
+      filePath: 'controllers/webauthn.js',
+      line: 7,
+    });
+    runtimeKeyFinding.addEvidence(new Evidence({
+      source: 'ast',
+      evidenceClass: EvidenceClass.DIRECT,
+      detail: 'crypto.generateKeyPairSync("ec")',
+      filePath: 'controllers/webauthn.js',
+      line: 7,
+    }));
+
+    classifyFindings([runtimeKeyFinding]);
+    // In-memory key pair generation is not a committed file leak
+    expect(runtimeKeyFinding.exposureRisk).toBe('NONE');
+    // Algorithmic quantum risk remains CRITICAL for EC
+    expect(runtimeKeyFinding.quantumRisk).toBe('CRITICAL');
+  });
 });

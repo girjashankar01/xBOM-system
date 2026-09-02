@@ -156,8 +156,14 @@ function classifyRisk(nistQuantumLevel, dataSensitivity, isNonApplicable = false
  * Resolves the exposureRisk severity dimension.
  * Independent of quantumRisk: a private key committed to a repository
  * is a CRITICAL secret-exposure issue regardless of algorithm quantum vulnerability.
+ * In-memory runtime generated key pairs (e.g. generateKeyPairSync in JS source)
+ * do not represent committed static key material on disk and resolve to NONE exposureRisk.
  */
 function classifyExposureRisk(finding) {
+  const filePath = finding.filePath || '';
+  const isKeyFileOnDisk = /\.(key|pem|p8|pkcs8)$/i.test(filePath) ||
+    finding.evidence.some(e => e.source === 'keysCerts' || /PEM header|file match|fs\.read/i.test(e.detail || ''));
+
   const isPrivateKey =
     (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL &&
       (finding.materialType === MaterialType.PRIVATE_KEY ||
@@ -165,18 +171,27 @@ function classifyExposureRisk(finding) {
        finding.name === 'private-key' ||
        /private-key/i.test(finding.materialType || '') ||
        /private-key/i.test(finding.name || ''))) ||
-    /\.(key|pem|p8|pkcs8)$/i.test(finding.filePath || '');
+    /\.(key|pem|p8|pkcs8)$/i.test(filePath);
 
-  if (isPrivateKey && finding.filePath) {
+  // 1. Static committed private key file on disk -> CRITICAL
+  if ((isPrivateKey && isKeyFileOnDisk) || /\.(key|pem|p8|pkcs8)$/i.test(filePath)) {
     return 'CRITICAL';
   }
 
-  // Symmetric secret keys committed in files
+  // 2. In-memory runtime generated key pair (e.g. generateKeyPairSync in JS/TS source file)
+  const isRuntimeGeneratedKey = isPrivateKey && !isKeyFileOnDisk &&
+    (finding.evidence.some(e => /generateKeyPair/i.test(e.detail || '')) || /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(filePath));
+
+  if (isRuntimeGeneratedKey) {
+    return 'NONE';
+  }
+
+  // 3. Symmetric secret keys committed in files
   if (
     finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL &&
     (finding.materialType === MaterialType.SECRET_KEY || finding.materialType === 'secret-key')
   ) {
-    return 'HIGH';
+    return isKeyFileOnDisk ? 'HIGH' : 'LOW';
   }
 
   // Explicit weak/hardcoded secret flags
