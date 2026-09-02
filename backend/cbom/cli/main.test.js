@@ -637,6 +637,61 @@ describe('CBOM Correctness & Schema Verification', () => {
     expect(runtimeKeyFinding.quantumRisk).toBe('CRITICAL');
   });
 
+  test('detects multiple distinct PEM blocks (EC private key + RSA public key) in the same file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbom-multi-pem-fixture-'));
+    try {
+      const multiPemContent = [
+        '-----BEGIN EC PRIVATE KEY-----',
+        'MHcCAQEEI...',
+        '-----END EC PRIVATE KEY-----',
+        '',
+        '// Some other code in between',
+        '',
+        '-----BEGIN PUBLIC KEY-----',
+        'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Y3wZ...',
+        '-----END PUBLIC KEY-----',
+      ].join('\n');
+      fs.writeFileSync(path.join(dir, 'keys.js'), multiPemContent);
+
+      const result = await runPipeline(dir, { skipLlm: true });
+      expect(result.validation.errors).toHaveLength(0);
+
+      const pemFindings = result.findings.filter(f => f.filePath.endsWith('keys.js'));
+      expect(pemFindings).toHaveLength(2);
+
+      const privateKey = pemFindings.find(f => f.materialType === 'private-key');
+      const publicKey = pemFindings.find(f => f.materialType === 'public-key');
+      expect(privateKey).toBeDefined();
+      expect(publicKey).toBeDefined();
+      expect(privateKey.line).toBe(1);
+      expect(publicKey.line).toBe(7);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('classifies hardcoded private key in a .js file as exposureRisk CRITICAL', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const jsKeyFinding = new CryptoFinding({
+      assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+      name: 'private-key',
+      materialType: MaterialType.PRIVATE_KEY,
+      filePath: 'controllers/webauthn.js',
+      line: 4,
+    });
+    jsKeyFinding.addEvidence(new Evidence({
+      source: 'keys_certs',
+      evidenceClass: EvidenceClass.DIRECT,
+      detail: 'PEM header match (private-key)',
+      filePath: 'controllers/webauthn.js',
+      line: 4,
+    }));
+
+    classifyFindings([jsKeyFinding]);
+    expect(jsKeyFinding.exposureRisk).toBe('CRITICAL');
+  });
+
   test('LLM verification runs on non-DIRECT supporting findings and handles unreachable endpoints gracefully', async () => {
     const { shouldVerify, verifySpan } = require('../verification/llm_agent');
 
@@ -654,7 +709,7 @@ describe('CBOM Correctness & Schema Verification', () => {
     });
     // With unreachable or unconfigured model, gracefully returns null
     expect(unreachableResult === null || unreachableResult instanceof CryptoFinding).toBe(true);
-  });
+  }, 15000);
 
   test('validateLlmResponse rejects invalid enum values and malformed primitive-in-family guesses', () => {
     const { validateLlmResponse } = require('../verification/llm_agent');

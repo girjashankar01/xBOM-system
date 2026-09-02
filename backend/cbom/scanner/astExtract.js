@@ -21,11 +21,29 @@ const { createRequire } = require('node:module');
 
 function getParser() {
   try {
-    const req = createRequire(__filename);
-    return req('@babel/parser');
+    const babelCore = require('@babel/core');
+    if (babelCore && typeof babelCore.parseSync === 'function') {
+      return {
+        parse: (code, opts) => babelCore.parseSync(code, {
+          configFile: false,
+          babelrc: false,
+          ast: true,
+          sourceType: opts?.sourceType || 'unambiguous',
+          plugins: [
+            '@babel/plugin-syntax-jsx',
+            '@babel/plugin-syntax-typescript',
+          ],
+        }),
+      };
+    }
+  } catch {}
+
+  try {
+    return require('@babel/parser');
   } catch {
     try {
-      return require('@babel/parser');
+      const req = createRequire(__filename);
+      return req('@babel/parser');
     } catch {
       return null;
     }
@@ -34,13 +52,20 @@ function getParser() {
 
 function getTraverse() {
   try {
-    const req = createRequire(__filename);
-    const t = req('@babel/traverse');
-    return t.default || t;
+    const babelCore = require('@babel/core');
+    if (babelCore && typeof babelCore.traverse === 'function') {
+      return babelCore.traverse;
+    }
+  } catch {}
+
+  try {
+    const t = require('@babel/traverse');
+    return t.default?.default || t.default || t;
   } catch {
     try {
-      const t = require('@babel/traverse');
-      return t.default || t;
+      const req = createRequire(__filename);
+      const t = req('@babel/traverse');
+      return t.default?.default || t.default || t;
     } catch {
       return null;
     }
@@ -55,6 +80,18 @@ const CIPHER_MODE_TOKENS = new Set([
 ]);
 
 const JWA_FAMILY_BY_PREFIX = { hs: 'HMAC', rs: 'RSA', es: 'ECDSA', ps: 'RSA-PSS' };
+
+const COSE_ALGORITHMS = {
+  [-7]: { name: 'ECDSA', algorithmFamily: 'ECDSA', primitive: Primitive.SIGNATURE, parameterSet: 'P-256 / ES256', label: 'ES256 (-7)' },
+  [-257]: { name: 'RSA', algorithmFamily: 'RSA', primitive: Primitive.SIGNATURE, parameterSet: 'RS256', label: 'RS256 (-257)' },
+  [-8]: { name: 'EdDSA', algorithmFamily: 'EdDSA', primitive: Primitive.SIGNATURE, parameterSet: 'EdDSA', label: 'EdDSA (-8)' },
+  [-37]: { name: 'RSA-PSS', algorithmFamily: 'RSA-PSS', primitive: Primitive.SIGNATURE, parameterSet: 'PS256', label: 'PS256 (-37)' },
+  [-35]: { name: 'ECDSA', algorithmFamily: 'ECDSA', primitive: Primitive.SIGNATURE, parameterSet: 'P-384 / ES384', label: 'ES384 (-35)' },
+  [-36]: { name: 'ECDSA', algorithmFamily: 'ECDSA', primitive: Primitive.SIGNATURE, parameterSet: 'P-521 / ES512', label: 'ES512 (-36)' },
+  [-47]: { name: 'ECDSA', algorithmFamily: 'ECDSA', primitive: Primitive.SIGNATURE, parameterSet: 'secp256k1 / ES256K', label: 'ES256K (-47)' },
+  [-258]: { name: 'RSA', algorithmFamily: 'RSA', primitive: Primitive.SIGNATURE, parameterSet: 'RS384', label: 'RS384 (-258)' },
+  [-259]: { name: 'RSA', algorithmFamily: 'RSA', primitive: Primitive.SIGNATURE, parameterSet: 'RS512', label: 'RS512 (-259)' },
+};
 
 function parseAlgorithmIdentifier(raw) {
   if (raw == null) return null;
@@ -121,6 +158,91 @@ function extractLiteralValue(node) {
   return null;
 }
 
+function extractNumericValue(node) {
+  if (!node) return null;
+  if (node.type === 'NumericLiteral') return node.value;
+  if (node.type === 'Literal' && typeof node.value === 'number') return node.value;
+  if (node.type === 'UnaryExpression' && node.operator === '-' && node.argument) {
+    const inner = extractNumericValue(node.argument);
+    return inner != null ? -inner : null;
+  }
+  return null;
+}
+
+function extractWebCryptoAlgorithm(node) {
+  if (!node) return null;
+  if (node.type === 'StringLiteral' || (node.type === 'Literal' && typeof node.value === 'string')) {
+    const val = node.value;
+    const parsed = parseAlgorithmIdentifier(val);
+    return {
+      name: parsed?.family || val.toUpperCase(),
+      family: parsed?.family || val.toUpperCase(),
+      mode: parsed?.mode || null,
+      parameterSet: parsed?.keySize || null,
+      rawDetail: val,
+    };
+  }
+  if (node.type === 'ObjectExpression') {
+    let nameVal = null;
+    let namedCurveVal = null;
+    let hashVal = null;
+    let lengthVal = null;
+    let modulusLengthVal = null;
+
+    for (const prop of node.properties) {
+      if (!prop.key) continue;
+      const k = prop.key.name || prop.key.value;
+      if (k === 'name') {
+        nameVal = extractLiteralValue(prop.value);
+      } else if (k === 'namedCurve') {
+        namedCurveVal = extractLiteralValue(prop.value);
+      } else if (k === 'hash') {
+        if (prop.value && prop.value.type === 'ObjectExpression') {
+          for (const subProp of prop.value.properties) {
+            const subK = subProp.key?.name || subProp.key?.value;
+            if (subK === 'name') hashVal = extractLiteralValue(subProp.value);
+          }
+        } else {
+          hashVal = extractLiteralValue(prop.value);
+        }
+      } else if (k === 'length') {
+        lengthVal = extractLiteralValue(prop.value);
+      } else if (k === 'modulusLength') {
+        modulusLengthVal = extractLiteralValue(prop.value);
+      }
+    }
+
+    const rawName = nameVal || 'UNKNOWN';
+    let family = rawName.toUpperCase();
+    if (/^RSASSA-PKCS1/i.test(rawName) || /^RSA-OAEP/i.test(rawName)) family = 'RSA';
+    else if (/^RSA-PSS/i.test(rawName)) family = 'RSA-PSS';
+    else if (/^ECDSA/i.test(rawName)) family = 'ECDSA';
+    else if (/^ECDH/i.test(rawName)) family = 'ECDH';
+    else if (/^AES/i.test(rawName)) family = 'AES';
+    else if (/^HMAC/i.test(rawName)) family = 'HMAC';
+    else if (/^PBKDF2/i.test(rawName)) family = 'PBKDF2';
+    else if (/^HKDF/i.test(rawName)) family = 'HKDF';
+    else if (/^ED25519/i.test(rawName)) family = 'EdDSA';
+
+    const paramParts = [
+      namedCurveVal,
+      hashVal ? (typeof hashVal === 'string' ? hashVal.toUpperCase() : null) : null,
+      lengthVal ? `${lengthVal} bits` : null,
+      modulusLengthVal ? `${modulusLengthVal} bits` : null,
+    ].filter(Boolean);
+
+    return {
+      name: family,
+      family,
+      namedCurve: namedCurveVal,
+      hash: hashVal,
+      parameterSet: paramParts.length ? paramParts.join(' / ') : null,
+      rawDetail: JSON.stringify({ name: nameVal, namedCurve: namedCurveVal, hash: hashVal, length: lengthVal || modulusLengthVal || undefined }),
+    };
+  }
+  return null;
+}
+
 function scanAstFile(filePath, code) {
   const findings = [];
   const lines = code.split('\n');
@@ -179,27 +301,173 @@ function scanAstFile(filePath, code) {
       ],
     });
   } catch (err) {
-    // Fallback to regex scanner if parser fails
     return scanRegexFallback(filePath, lines);
   }
 
   // 1. Traverse AST CallExpressions & collect aliases
+  const cryptoAliases = new Set(['crypto', 'node:crypto']);
+  const subtleAliases = new Set(['subtle']);
+  const destructuredCryptoFns = new Map();
   const cryptoJsAliases = new Set(['cryptojs', 'crypto_js']);
   const jwtAliases = new Set(['jwt', 'jsonwebtoken', 'jose']);
+  const seenCoseLocations = new Set();
 
   try {
     traverse(ast, {
+      ImportDeclaration(p) {
+        const sourceVal = p.node.source ? p.node.source.value : '';
+        if (sourceVal === 'crypto' || sourceVal === 'node:crypto') {
+          for (const spec of p.node.specifiers) {
+            if (spec.type === 'ImportDefaultSpecifier' || spec.type === 'ImportNamespaceSpecifier') {
+              cryptoAliases.add(spec.local.name.toLowerCase());
+            } else if (spec.type === 'ImportSpecifier') {
+              const importedName = spec.imported ? (spec.imported.name || spec.imported.value) : spec.local.name;
+              destructuredCryptoFns.set(spec.local.name.toLowerCase(), importedName);
+              if (importedName === 'subtle') subtleAliases.add(spec.local.name.toLowerCase());
+            }
+          }
+        } else if (sourceVal === 'crypto-js') {
+          for (const spec of p.node.specifiers) {
+            cryptoJsAliases.add(spec.local.name.toLowerCase());
+          }
+        } else if (sourceVal === 'jsonwebtoken' || sourceVal === 'jose') {
+          for (const spec of p.node.specifiers) {
+            jwtAliases.add(spec.local.name.toLowerCase());
+          }
+        }
+      },
       VariableDeclarator(p) {
         const id = p.node.id;
         const init = p.node.init;
-        if (id && id.type === 'Identifier' && init) {
-          if (init.type === 'Identifier') {
-            if (/^(cryptojs|crypto_js)$/i.test(init.name)) cryptoJsAliases.add(id.name.toLowerCase());
-            if (/^(jwt|jsonwebtoken|jose)$/i.test(init.name)) jwtAliases.add(id.name.toLowerCase());
-          } else if (init.type === 'CallExpression' && init.callee && init.callee.name === 'require' && init.arguments[0]) {
+
+        if (id && init) {
+          if (id.type === 'Identifier') {
+            const idLower = id.name.toLowerCase();
+            if (init.type === 'Identifier') {
+              const initLower = init.name.toLowerCase();
+              if (cryptoAliases.has(initLower)) cryptoAliases.add(idLower);
+              if (/^(cryptojs|crypto_js)$/i.test(init.name)) cryptoJsAliases.add(idLower);
+              if (/^(jwt|jsonwebtoken|jose)$/i.test(init.name)) jwtAliases.add(idLower);
+            } else if (init.type === 'MemberExpression') {
+              const objName = init.object?.name?.toLowerCase();
+              const propName = init.property?.name || init.property?.value;
+              if (cryptoAliases.has(objName) && propName === 'subtle') {
+                subtleAliases.add(idLower);
+              }
+            } else if (init.type === 'CallExpression' && init.callee && init.callee.name === 'require' && init.arguments[0]) {
+              const reqVal = extractLiteralValue(init.arguments[0]);
+              if (reqVal === 'crypto' || reqVal === 'node:crypto') cryptoAliases.add(idLower);
+              if (reqVal === 'crypto-js') cryptoJsAliases.add(idLower);
+              if (reqVal === 'jsonwebtoken' || reqVal === 'jose') jwtAliases.add(idLower);
+            }
+
+            // COSE variable match (e.g. const coseAlg = -7)
+            if (/^(alg|algorithm|coseAlg|coseAlgorithm|preferredAlgorithm)$/i.test(id.name)) {
+              const numVal = extractNumericValue(init);
+              if (numVal !== null && COSE_ALGORITHMS[numVal]) {
+                const line = id.loc ? id.loc.start.line : 1;
+                const locKey = `${line}:${numVal}`;
+                if (!seenCoseLocations.has(locKey)) {
+                  seenCoseLocations.add(locKey);
+                  const cose = COSE_ALGORITHMS[numVal];
+                  addFinding({
+                    name: cose.name,
+                    algorithmFamily: cose.algorithmFamily,
+                    primitive: cose.primitive,
+                    parameterSet: cose.parameterSet,
+                    rawConfidence: 0.95,
+                    sourceContext: 'live',
+                  }, line, `COSE algorithm identifier ${cose.label}`);
+                }
+              }
+            }
+          } else if (id.type === 'ObjectPattern' && init.type === 'CallExpression' && init.callee && init.callee.name === 'require' && init.arguments[0]) {
             const reqVal = extractLiteralValue(init.arguments[0]);
-            if (reqVal === 'crypto-js') cryptoJsAliases.add(id.name.toLowerCase());
-            if (reqVal === 'jsonwebtoken' || reqVal === 'jose') jwtAliases.add(id.name.toLowerCase());
+            if (reqVal === 'crypto' || reqVal === 'node:crypto') {
+              for (const prop of id.properties) {
+                if (prop.type === 'ObjectProperty' && prop.key && prop.value) {
+                  const orig = prop.key.name || prop.key.value;
+                  const local = prop.value.name || orig;
+                  destructuredCryptoFns.set(local.toLowerCase(), orig);
+                  if (orig === 'subtle') subtleAliases.add(local.toLowerCase());
+                }
+              }
+            }
+          } else if (id.type === 'ObjectPattern' && init.type === 'Identifier') {
+            const initLower = init.name.toLowerCase();
+            if (cryptoAliases.has(initLower)) {
+              for (const prop of id.properties) {
+                if (prop.type === 'ObjectProperty' && prop.key && prop.value) {
+                  const orig = prop.key.name || prop.key.value;
+                  const local = prop.value.name || orig;
+                  destructuredCryptoFns.set(local.toLowerCase(), orig);
+                  if (orig === 'subtle') subtleAliases.add(local.toLowerCase());
+                }
+              }
+            }
+          }
+        }
+      },
+      ObjectProperty(p) {
+        const prop = p.node;
+        if (!prop.key) return;
+        const kName = prop.key.name || prop.key.value;
+        const line = prop.loc ? prop.loc.start.line : 1;
+
+        // 1. Single COSE algorithm property, e.g. { alg: -7 } or { algorithm: -257 }
+        if (/^(alg|algorithm|coseAlg|coseAlgorithm)$/i.test(kName)) {
+          const numVal = extractNumericValue(prop.value);
+          if (numVal !== null && COSE_ALGORITHMS[numVal]) {
+            const locKey = `${line}:${numVal}`;
+            if (!seenCoseLocations.has(locKey)) {
+              seenCoseLocations.add(locKey);
+              const cose = COSE_ALGORITHMS[numVal];
+              addFinding({
+                name: cose.name,
+                algorithmFamily: cose.algorithmFamily,
+                primitive: cose.primitive,
+                parameterSet: cose.parameterSet,
+                rawConfidence: 0.95,
+                sourceContext: 'live',
+              }, line, `COSE algorithm identifier ${cose.label}`);
+            }
+          }
+        }
+
+        // 2. pubKeyCredParams array, e.g. pubKeyCredParams: [{ type: 'public-key', alg: -7 }]
+        if (/^(pubKeyCredParams|supportedAlgorithmIDs|authenticatorSelection)$/i.test(kName) && prop.value && prop.value.type === 'ArrayExpression') {
+          for (const elem of prop.value.elements) {
+            if (!elem) continue;
+            let algVal = null;
+            let elemLine = elem.loc ? elem.loc.start.line : line;
+
+            if (elem.type === 'ObjectExpression') {
+              for (const sub of elem.properties) {
+                const subK = sub.key ? (sub.key.name || sub.key.value) : '';
+                if (/^(alg|algorithm)$/i.test(subK)) {
+                  algVal = extractNumericValue(sub.value);
+                  if (sub.loc) elemLine = sub.loc.start.line;
+                }
+              }
+            } else {
+              algVal = extractNumericValue(elem);
+            }
+
+            if (algVal !== null && COSE_ALGORITHMS[algVal]) {
+              const locKey = `${elemLine}:${algVal}`;
+              if (!seenCoseLocations.has(locKey)) {
+                seenCoseLocations.add(locKey);
+                const cose = COSE_ALGORITHMS[algVal];
+                addFinding({
+                  name: cose.name,
+                  algorithmFamily: cose.algorithmFamily,
+                  primitive: cose.primitive,
+                  parameterSet: cose.parameterSet,
+                  rawConfidence: 0.95,
+                  sourceContext: 'live',
+                }, elemLine, `WebAuthn pubKeyCredParams COSE algorithm ${cose.label}`);
+              }
+            }
           }
         }
       },
@@ -220,7 +488,7 @@ function scanAstFile(filePath, code) {
               if (m.type === 'Identifier') return m.name;
               if (m.type === 'MemberExpression') {
                 const o = getFullName(m.object);
-                const pr = m.property ? m.property.name : '';
+                const pr = m.property ? (m.property.name || m.property.value) : '';
                 return o ? `${o}.${pr}` : pr;
               }
               return '';
@@ -235,9 +503,287 @@ function scanAstFile(filePath, code) {
         }
 
         const objLower = (objName || '').toLowerCase();
-        const objRoot = (objName || '').split('.')[0].toLowerCase();
+        const objParts = objLower.split('.');
+        const isSubtleCall =
+          subtleAliases.has(objLower) ||
+          (objParts.length >= 2 && objParts[objParts.length - 1] === 'subtle' && (cryptoAliases.has(objParts[0]) || objParts[0] === 'window'));
 
-        // 1. bcrypt / bcrypt-nodejs / bcryptjs
+        // 1. WebCrypto API (crypto.subtle.*)
+        if (isSubtleCall && propName) {
+          if (propName === 'verify' || propName === 'sign') {
+            const algInfo = extractWebCryptoAlgorithm(node.arguments[0]) || { family: 'ECDSA', parameterSet: 'P-256' };
+            const isHmac = algInfo.family === 'HMAC';
+            addFinding({
+              name: algInfo.family || 'ECDSA',
+              algorithmFamily: algInfo.family || 'ECDSA',
+              primitive: isHmac ? Primitive.MAC : Primitive.SIGNATURE,
+              parameterSet: algInfo.parameterSet || null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.subtle.${propName}(${algInfo.rawDetail || algInfo.family})`);
+          } else if (propName === 'digest') {
+            const algInfo = extractWebCryptoAlgorithm(node.arguments[0]) || { family: 'SHA-256' };
+            addFinding({
+              name: algInfo.family || 'SHA-256',
+              algorithmFamily: algInfo.family || 'SHA-256',
+              primitive: Primitive.HASH,
+              parameterSet: algInfo.parameterSet || null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.subtle.digest(${algInfo.rawDetail || algInfo.family})`);
+          } else if (propName === 'importKey') {
+            const formatArg = extractLiteralValue(node.arguments[0]);
+            const algInfo = extractWebCryptoAlgorithm(node.arguments[2]) || { family: 'ECDSA', parameterSet: 'P-256' };
+            const isAsymmetric = /^(ECDSA|ECDH|RSA|RSA-PSS|EDDSA)$/i.test(algInfo.family);
+            const isPub = formatArg === 'spki';
+            const isPriv = formatArg === 'pkcs8';
+
+            addFinding({
+              assetType: isAsymmetric ? AssetType.RELATED_CRYPTO_MATERIAL : AssetType.ALGORITHM,
+              materialType: isAsymmetric ? (isPriv ? MaterialType.PRIVATE_KEY : MaterialType.PUBLIC_KEY) : null,
+              name: algInfo.family || 'ECDSA',
+              algorithmFamily: algInfo.family || 'ECDSA',
+              primitive: isAsymmetric ? null : Primitive.BLOCK_CIPHER,
+              parameterSet: algInfo.parameterSet || null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.subtle.importKey(${formatArg || ''}, ${algInfo.rawDetail || algInfo.family})`);
+          } else if (propName === 'generateKey') {
+            const algInfo = extractWebCryptoAlgorithm(node.arguments[0]) || { family: 'ECDSA', parameterSet: 'P-256' };
+            addFinding({
+              name: algInfo.family || 'ECDSA',
+              algorithmFamily: algInfo.family || 'ECDSA',
+              primitive: Primitive.SIGNATURE,
+              parameterSet: algInfo.parameterSet || null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.subtle.generateKey(${algInfo.rawDetail || algInfo.family})`);
+          } else if (propName === 'deriveKey' || propName === 'deriveBits') {
+            const algInfo = extractWebCryptoAlgorithm(node.arguments[0]) || { family: 'HKDF' };
+            const isEcdh = algInfo.family === 'ECDH';
+            addFinding({
+              name: algInfo.family || 'HKDF',
+              algorithmFamily: algInfo.family || 'HKDF',
+              primitive: isEcdh ? Primitive.KEY_AGREE : Primitive.KDF,
+              parameterSet: algInfo.parameterSet || null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.subtle.${propName}(${algInfo.rawDetail || algInfo.family})`);
+          }
+          return;
+        }
+
+        // Resolve Node crypto direct calls vs destructured calls
+        let isNodeCrypto = cryptoAliases.has(objLower);
+        let resolvedMethod = propName;
+
+        if (!isNodeCrypto && !objName && propName && destructuredCryptoFns.has(propName.toLowerCase())) {
+          isNodeCrypto = true;
+          resolvedMethod = destructuredCryptoFns.get(propName.toLowerCase());
+        }
+
+        // 2. Node.js built-in crypto
+        if (isNodeCrypto && resolvedMethod) {
+          if (resolvedMethod === 'verify') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA' };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              parameterSet: parsed.mode || (algArg ? String(algArg) : null),
+              rawConfidence: isLiteral ? 0.95 : 0.85,
+              sourceContext: 'live',
+            }, line, `crypto.verify(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (resolvedMethod === 'sign') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA' };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              parameterSet: parsed.mode || (algArg ? String(algArg) : null),
+              rawConfidence: isLiteral ? 0.95 : 0.85,
+              sourceContext: 'live',
+            }, line, `crypto.sign(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (resolvedMethod === 'createPublicKey') {
+            addFinding({
+              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+              materialType: MaterialType.PUBLIC_KEY,
+              name: 'public-key',
+              algorithmFamily: 'RSA',
+              primitive: null,
+              rawConfidence: 0.90,
+              sourceContext: 'live',
+            }, line, 'crypto.createPublicKey()');
+          } else if (resolvedMethod === 'createPrivateKey') {
+            addFinding({
+              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+              materialType: MaterialType.PRIVATE_KEY,
+              name: 'private-key',
+              algorithmFamily: 'RSA',
+              primitive: null,
+              rawConfidence: 0.90,
+              sourceContext: 'live',
+            }, line, 'crypto.createPrivateKey()');
+          } else if (resolvedMethod === 'timingSafeEqual') {
+            addFinding({
+              assetType: AssetType.ALGORITHM,
+              name: 'timingSafeEqual',
+              algorithmFamily: 'timingSafeEqual',
+              primitive: null,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, 'crypto.timingSafeEqual() [constant-time comparison]');
+          } else if (/^hkdf(Sync)?$/.test(resolvedMethod)) {
+            const digestArg = extractLiteralValue(node.arguments[0]);
+            addFinding({
+              name: 'HKDF',
+              algorithmFamily: 'HKDF',
+              primitive: Primitive.KDF,
+              parameterSet: digestArg ? String(digestArg) : 'sha256',
+              rawConfidence: digestArg ? 0.95 : 0.85,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${digestArg ? '"' + digestArg + '"' : ''})`);
+          } else if (resolvedMethod === 'createHash') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: (algArg || 'SHA-256').toUpperCase() };
+            addFinding({
+              name: parsed.family || 'HASH',
+              algorithmFamily: parsed.family || 'HASH',
+              primitive: Primitive.HASH,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.createHash(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (resolvedMethod === 'createHmac') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'HMAC', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: 'HMAC',
+              algorithmFamily: 'HMAC',
+              primitive: Primitive.MAC,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.createHmac(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createCipher(iv)?$/.test(resolvedMethod)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
+            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
+            addFinding({
+              name: parsed.family || 'AES',
+              algorithmFamily: parsed.family || 'AES',
+              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              mode: parsed.mode || null,
+              parameterSet: parsed.keySize || null,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createDecipher(iv)?$/.test(resolvedMethod)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
+            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
+            addFinding({
+              name: parsed.family || 'AES',
+              algorithmFamily: parsed.family || 'AES',
+              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              mode: parsed.mode || null,
+              parameterSet: parsed.keySize || null,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (resolvedMethod === 'createSign') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.createSign(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (resolvedMethod === 'createVerify') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.createVerify(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^pbkdf2(Sync)?$/.test(resolvedMethod)) {
+            const iterArg = extractLiteralValue(node.arguments[2]);
+            const keyLenArg = extractLiteralValue(node.arguments[3]);
+            const digestArg = extractLiteralValue(node.arguments[4]) || extractLiteralValue(node.arguments[3]);
+            const hasExplicitArgs = iterArg != null || digestArg != null;
+            const params = [
+              iterArg ? `${iterArg} iters` : null,
+              keyLenArg ? `${keyLenArg} bytes` : null,
+              digestArg ? String(digestArg) : null,
+            ].filter(Boolean).join(', ');
+            addFinding({
+              name: 'PBKDF2',
+              algorithmFamily: 'PBKDF2',
+              primitive: Primitive.KDF,
+              parameterSet: params || null,
+              rawConfidence: hasExplicitArgs ? 0.95 : 0.85,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}()`);
+          } else if (/^scrypt(Sync)?$/.test(resolvedMethod)) {
+            addFinding({
+              name: 'scrypt',
+              algorithmFamily: 'scrypt',
+              primitive: Primitive.KDF,
+              rawConfidence: 0.95,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}()`);
+          } else if (/^randomBytes(Sync)?$/.test(resolvedMethod)) {
+            const bytesArg = extractLiteralValue(node.arguments[0]);
+            addFinding({
+              name: 'CSPRNG',
+              algorithmFamily: 'CSPRNG',
+              primitive: Primitive.DRBG,
+              parameterSet: bytesArg ? `${bytesArg * 8} bits` : null,
+              rawConfidence: bytesArg ? 0.95 : 0.85,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${bytesArg || ''})`);
+          } else if (/^generateKeyPair(Sync)?$/.test(resolvedMethod)) {
+            const typeArg = extractLiteralValue(node.arguments[0]);
+            const family = typeArg ? typeArg.toUpperCase() : 'RSA';
+            addFinding({
+              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+              materialType: MaterialType.PRIVATE_KEY,
+              name: family,
+              algorithmFamily: family,
+              primitive: null,
+              rawConfidence: typeArg ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${typeArg ? '"' + typeArg + '"' : ''})`);
+          } else if (/^(createDiffieHellman|createECDH)$/.test(resolvedMethod)) {
+            const curveArg = extractLiteralValue(node.arguments[0]);
+            addFinding({
+              name: resolvedMethod === 'createECDH' ? 'ECDH' : 'DH',
+              algorithmFamily: resolvedMethod === 'createECDH' ? 'ECDH' : 'DH',
+              primitive: Primitive.KEY_AGREE,
+              parameterSet: curveArg ? String(curveArg) : null,
+              rawConfidence: curveArg ? 0.95 : 0.80,
+              sourceContext: 'live',
+            }, line, `crypto.${resolvedMethod}(${curveArg ? '"' + curveArg + '"' : ''})`);
+          }
+        }
+
+        // 3. bcrypt / bcrypt-nodejs / bcryptjs
         if ((objLower === 'bcrypt' || objLower === 'bcryptjs' || objLower === 'bcrypt-nodejs' || objLower.includes('bcrypt')) &&
             /^(hash|hashSync|compare|compareSync|genSalt|genSaltSync)$/.test(propName)) {
           const isSalt = /genSalt/.test(propName);
@@ -278,146 +824,8 @@ function scanAstFile(filePath, code) {
           }
         }
 
-        // 2. Node.js built-in crypto
-        if ((objLower === 'crypto' || objLower === 'node:crypto' || objLower.endsWith('crypto')) && propName) {
-          if (propName === 'createHash') {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: (algArg || 'SHA-256').toUpperCase() };
-            addFinding({
-              name: parsed.family || 'HASH',
-              algorithmFamily: parsed.family || 'HASH',
-              primitive: Primitive.HASH,
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.createHash(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (propName === 'createHmac') {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'HMAC', mode: algArg ? algArg.toUpperCase() : null };
-            addFinding({
-              name: 'HMAC',
-              algorithmFamily: 'HMAC',
-              primitive: Primitive.MAC,
-              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.createHmac(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (/^createCipher(iv)?$/.test(propName)) {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
-            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
-            addFinding({
-              name: parsed.family || 'AES',
-              algorithmFamily: parsed.family || 'AES',
-              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
-              mode: parsed.mode || null,
-              parameterSet: parsed.keySize || null,
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (/^createDecipher(iv)?$/.test(propName)) {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
-            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
-            addFinding({
-              name: parsed.family || 'AES',
-              algorithmFamily: parsed.family || 'AES',
-              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
-              mode: parsed.mode || null,
-              parameterSet: parsed.keySize || null,
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (/^createSign$/.test(propName)) {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
-            addFinding({
-              name: parsed.family || 'RSA',
-              algorithmFamily: parsed.family || 'RSA',
-              primitive: Primitive.SIGNATURE,
-              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.createSign(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (/^createVerify$/.test(propName)) {
-            const algArg = extractLiteralValue(node.arguments[0]);
-            const isLiteral = algArg != null;
-            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
-            addFinding({
-              name: parsed.family || 'RSA',
-              algorithmFamily: parsed.family || 'RSA',
-              primitive: Primitive.SIGNATURE,
-              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
-              rawConfidence: isLiteral ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.createVerify(${algArg ? '"' + algArg + '"' : ''})`);
-          } else if (/^pbkdf2(Sync)?$/.test(propName)) {
-            const iterArg = extractLiteralValue(node.arguments[2]);
-            const keyLenArg = extractLiteralValue(node.arguments[3]);
-            const digestArg = extractLiteralValue(node.arguments[4]) || extractLiteralValue(node.arguments[3]);
-            const hasExplicitArgs = iterArg != null || digestArg != null;
-            const params = [
-              iterArg ? `${iterArg} iters` : null,
-              keyLenArg ? `${keyLenArg} bytes` : null,
-              digestArg ? String(digestArg) : null,
-            ].filter(Boolean).join(', ');
-            addFinding({
-              name: 'PBKDF2',
-              algorithmFamily: 'PBKDF2',
-              primitive: Primitive.KDF,
-              parameterSet: params || null,
-              rawConfidence: hasExplicitArgs ? 0.95 : 0.85,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}()`);
-          } else if (/^scrypt(Sync)?$/.test(propName)) {
-            addFinding({
-              name: 'scrypt',
-              algorithmFamily: 'scrypt',
-              primitive: Primitive.KDF,
-              rawConfidence: 0.95,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}()`);
-          } else if (/^randomBytes(Sync)?$/.test(propName)) {
-            const bytesArg = extractLiteralValue(node.arguments[0]);
-            addFinding({
-              name: 'CSPRNG',
-              algorithmFamily: 'CSPRNG',
-              primitive: Primitive.DRBG,
-              parameterSet: bytesArg ? `${bytesArg * 8} bits` : null,
-              rawConfidence: bytesArg ? 0.95 : 0.85,
-              sourceContext: 'live',
-            }, line, `crypto.randomBytes(${bytesArg || ''})`);
-          } else if (/^generateKeyPair(Sync)?$/.test(propName)) {
-            const typeArg = extractLiteralValue(node.arguments[0]);
-            const family = typeArg ? typeArg.toUpperCase() : 'RSA';
-            addFinding({
-              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
-              materialType: MaterialType.PRIVATE_KEY,
-              name: family,
-              algorithmFamily: family,
-              primitive: null,
-              rawConfidence: typeArg ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}(${typeArg ? '"' + typeArg + '"' : ''})`);
-          } else if (/^(createDiffieHellman|createECDH)$/.test(propName)) {
-            const curveArg = extractLiteralValue(node.arguments[0]);
-            addFinding({
-              name: propName === 'createECDH' ? 'ECDH' : 'DH',
-              algorithmFamily: propName === 'createECDH' ? 'ECDH' : 'DH',
-              primitive: Primitive.KEY_AGREE,
-              parameterSet: curveArg ? String(curveArg) : null,
-              rawConfidence: curveArg ? 0.95 : 0.80,
-              sourceContext: 'live',
-            }, line, `crypto.${propName}(${curveArg ? '"' + curveArg + '"' : ''})`);
-          }
-        }
-
-        // 3. jsonwebtoken / jwt / jose
-        if ((jwtAliases.has(objRoot) || objLower.includes('jwt') || objLower.includes('jose')) &&
+        // 4. jsonwebtoken / jwt / jose
+        if ((jwtAliases.has(objLower) || objLower.includes('jwt') || objLower.includes('jose')) &&
             /^(sign|verify|signJWT|jwtVerify|compactSign|compactEncrypt)$/i.test(propName)) {
           let algs = [];
           let isWeak = false;
@@ -466,8 +874,8 @@ function scanAstFile(filePath, code) {
           }
         }
 
-        // 4. CryptoJS
-        if (cryptoJsAliases.has(objRoot) || objLower.includes('cryptojs') || objLower.includes('crypto_js')) {
+        // 5. CryptoJS
+        if (cryptoJsAliases.has(objLower) || objLower.includes('cryptojs') || objLower.includes('crypto_js')) {
           const parts = (objName || '').split('.');
           const lastPart = parts[parts.length - 1] || '';
 
@@ -631,6 +1039,115 @@ function scanRegexFallback(filePath, lines) {
   const findings = [];
   lines.forEach((l, idx) => {
     const lineNum = idx + 1;
+
+    // COSE algorithms in regex fallback
+    const coseMatch = l.match(/\b(?:alg|coseAlg|algorithm)\s*:\s*(-7|-257|-8|-37|-35|-36|-47|-258|-259)\b/i);
+    if (coseMatch) {
+      const algNum = parseInt(coseMatch[1], 10);
+      const cose = COSE_ALGORITHMS[algNum];
+      if (cose) {
+        const f = new CryptoFinding({
+          assetType: AssetType.ALGORITHM,
+          name: cose.name,
+          algorithmFamily: cose.algorithmFamily,
+          primitive: cose.primitive,
+          parameterSet: cose.parameterSet,
+          filePath,
+          line: lineNum,
+          sourceContext: 'live',
+        });
+        f.addEvidence(new Evidence({
+          source: 'ast',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `COSE algorithm ${cose.label} (regex fallback)`,
+          rawConfidence: 0.60,
+          filePath,
+          line: lineNum,
+        }));
+        findings.push(f);
+      }
+    }
+
+    // WebCrypto calls in regex fallback
+    if (/crypto\.subtle\.(verify|sign|digest|importKey|generateKey|deriveKey|deriveBits)/.test(l)) {
+      const m = l.match(/crypto\.subtle\.(verify|sign|digest|importKey|generateKey|deriveKey|deriveBits)/);
+      const method = m ? m[1] : 'verify';
+      let family = 'ECDSA';
+      let primitive = Primitive.SIGNATURE;
+      if (method === 'digest') { family = 'SHA-256'; primitive = Primitive.HASH; }
+      else if (method === 'deriveKey' || method === 'deriveBits') { family = 'HKDF'; primitive = Primitive.KDF; }
+
+      if (/P-256|ECDSA/i.test(l)) { family = 'ECDSA'; }
+      else if (/RSA/i.test(l)) { family = 'RSA'; }
+      else if (/AES/i.test(l)) { family = 'AES'; primitive = Primitive.BLOCK_CIPHER; }
+
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: family,
+        algorithmFamily: family,
+        primitive,
+        filePath,
+        line: lineNum,
+        sourceContext: 'live',
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: `crypto.subtle.${method}() (regex fallback)`,
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+
+    // Node crypto.verify / crypto.sign / crypto.hkdf
+    if (/crypto\.(verify|sign)\s*\(/.test(l)) {
+      const m = l.match(/crypto\.(verify|sign)\s*\(\s*['"]?([A-Za-z0-9-]+)?/);
+      const alg = m && m[2] ? m[2] : 'RSA';
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: 'RSA',
+        algorithmFamily: 'RSA',
+        primitive: Primitive.SIGNATURE,
+        parameterSet: alg,
+        filePath,
+        line: lineNum,
+        sourceContext: 'live',
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: `crypto.${m ? m[1] : 'verify'}(${alg}) (regex fallback)`,
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+
+    if (/crypto\.(hkdf|hkdfSync)\s*\(/.test(l)) {
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: 'HKDF',
+        algorithmFamily: 'HKDF',
+        primitive: Primitive.KDF,
+        parameterSet: 'sha256',
+        filePath,
+        line: lineNum,
+        sourceContext: 'live',
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: 'crypto.hkdf call (regex fallback)',
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+
     if (/bcrypt\.(hash|hashSync|compare|compareSync|genSalt|genSaltSync)/.test(l)) {
       const isSalt = /genSalt/.test(l);
       const isCompare = /compare/.test(l);
