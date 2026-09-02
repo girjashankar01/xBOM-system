@@ -373,4 +373,87 @@ describe('CBOM Correctness & Schema Verification', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('scores exposureRisk as CRITICAL on committed private key files independent of quantumRisk', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbom-exposure-fixture-'));
+    try {
+      const privateKeyContent = [
+        '-----BEGIN RSA PRIVATE KEY-----',
+        'MIIEowIBAAKCAQEA0Y3wZ...',
+        '-----END RSA PRIVATE KEY-----',
+      ].join('\n');
+      fs.writeFileSync(path.join(dir, 'server.key'), privateKeyContent);
+
+      const result = await runPipeline(dir, { skipLlm: true });
+      expect(result.validation.errors).toHaveLength(0);
+
+      const keyFinding = result.findings.find(f => f.filePath.endsWith('server.key'));
+      expect(keyFinding).toBeDefined();
+      expect(keyFinding.assetType).toBe(AssetType.RELATED_CRYPTO_MATERIAL);
+      expect(keyFinding.materialType).toBe('private-key');
+      // Independent dimensions:
+      expect(keyFinding.exposureRisk).toBe('CRITICAL');
+      expect(keyFinding.quantumRisk).toBe('MEDIUM');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('scores exposureRisk as NONE / LOW on standard code algorithms and certificates', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const algoFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'AES-256-GCM',
+      algorithmFamily: 'AES',
+      primitive: Primitive.BLOCK_CIPHER,
+      parameterSet: '256',
+      filePath: 'src/crypto.js',
+      line: 12,
+    });
+
+    const certFinding = new CryptoFinding({
+      assetType: AssetType.CERTIFICATE,
+      name: 'X.509 Certificate',
+      filePath: 'certs/ca.crt',
+      line: 1,
+    });
+
+    classifyFindings([algoFinding, certFinding]);
+
+    // Algo: quantumRisk is LOW, exposureRisk is NONE
+    expect(algoFinding.quantumRisk).toBe('LOW');
+    expect(algoFinding.exposureRisk).toBe('NONE');
+
+    // Cert: quantumRisk is HIGH/CRITICAL (asymmetric), exposureRisk is LOW (public metadata)
+    expect(certFinding.exposureRisk).toBe('LOW');
+  });
+
+  test('attributes crypto dependencies to packages via SbomAdapter and correlation', async () => {
+    const { SbomAdapter } = require('../context/sbomAdapter');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbom-pkg-attribution-'));
+    try {
+      const mockSbom = {
+        components: [
+          { name: 'bcrypt-nodejs', version: '0.0.3', purl: 'pkg:npm/bcrypt-nodejs@0.0.3' },
+          { name: 'jsonwebtoken', version: '9.0.0', purl: 'pkg:npm/jsonwebtoken@9.0.0' },
+          { name: 'lodash', version: '4.17.21', purl: 'pkg:npm/lodash@4.17.21' },
+        ],
+      };
+
+      const result = await runPipeline(dir, { sbom: mockSbom, skipLlm: true });
+      expect(result.correlation).toBeDefined();
+      expect(result.correlation.summary.attributedToPackage).toBeGreaterThan(0);
+
+      const correlatedPkgs = result.correlation.correlated
+        .filter(c => c.packageContext)
+        .map(c => c.packageContext.name);
+
+      expect(correlatedPkgs).toContain('bcrypt-nodejs');
+      expect(correlatedPkgs).toContain('jsonwebtoken');
+      expect(correlatedPkgs).not.toContain('lodash');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -57,7 +57,8 @@ class CryptoFinding {
     this.sourceContext = sourceContext;   // "live" | "comment"
 
     this.nistQuantumLevel = null;        // filled by analysis/quantumRisk.js
-    this.quantumRisk = null;             // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+    this.quantumRisk = null;             // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE"
+    this.exposureRisk = null;            // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE"
 
     this.evidence = [];                  // Evidence[]
     this.confidence = 0.0;               // filled by analysis/confidence.js
@@ -95,6 +96,7 @@ class CryptoFinding {
       sourceContext: this.sourceContext,
       confidence: this.confidence,
       quantumRisk: this.quantumRisk,
+      exposureRisk: this.exposureRisk,
       evidence: this.evidence.map((e) => ({
         source: e.source,
         evidenceClass: e.evidenceClass,

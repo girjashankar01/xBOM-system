@@ -86,30 +86,6 @@ async function runPipeline(targetDir, options = {}) {
     throw new Error(`targetDir "${targetDir}" is not a directory`);
   }
 
-  // Phase 2: Semgrep/AST detector. Degrades gracefully when semgrep is not
-  // on PATH (e.g. dev environments without semgrep installed) — warns and
-  // returns [] so the rest of the pipeline still runs on Phase 2.5/3 findings.
-  let astFindings = [];
-  try {
-    astFindings = scanAstExtract(targetDir);
-  } catch (err) {
-    console.warn(`[main] scanner/astExtract.js (Phase 2) skipped — ${err.message}`);
-  }
-  const rawFindings = [...astFindings, ...scanKeysCerts(targetDir), ...scanConstants(targetDir)];
-
-  classifyFindings(rawFindings); // Phase 4, before verification so llm_agent gets real context
-
-  const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir });
-  classifyFindings(llmFindings);
-
-  const merged = aggregate([...rawFindings, ...llmFindings]); // Phase 7a
-  scoreFindings(merged);        // Phase 7b
-  classifyQuantumRisk(merged);  // Phase 8
-
-  const validation = validateFindings(merged); // Phase 7 (validator)
-  for (const w of validation.warnings) console.warn(`[validator] warning: ${w.message} (${w.findingId})`);
-  for (const e of validation.errors) console.error(`[validator] error: ${e.message} (${e.findingId})`);
-
   let sbomAdapter = passedAdapter;
   let correlation = null;
   const inMemorySbom = sbomJson || sbom;
@@ -124,6 +100,39 @@ async function runPipeline(targetDir, options = {}) {
       console.warn(`[main] could not load SBOM at ${sbomPath} — skipping correlation. ${err.message}`);
     }
   }
+
+  // Phase 2: Semgrep/AST detector. Degrades gracefully when semgrep is not
+  // on PATH (e.g. dev environments without semgrep installed) — warns and
+  // returns [] so the rest of the pipeline still runs on Phase 2.5/3 findings.
+  let astFindings = [];
+  try {
+    astFindings = scanAstExtract(targetDir);
+  } catch (err) {
+    console.warn(`[main] scanner/astExtract.js (Phase 2) skipped — ${err.message}`);
+  }
+
+  // Phase 1 / 3: SCA package-level crypto detection from SBOM
+  const scaFindings = sbomAdapter ? sbomAdapter.generateScaFindings() : [];
+
+  const rawFindings = [
+    ...astFindings,
+    ...scanKeysCerts(targetDir),
+    ...scanConstants(targetDir),
+    ...scaFindings,
+  ];
+
+  classifyFindings(rawFindings); // Phase 4, before verification so llm_agent gets real context
+
+  const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir });
+  classifyFindings(llmFindings);
+
+  const merged = aggregate([...rawFindings, ...llmFindings]); // Phase 7a
+  scoreFindings(merged);        // Phase 7b
+  classifyQuantumRisk(merged);  // Phase 8
+
+  const validation = validateFindings(merged); // Phase 7 (validator)
+  for (const w of validation.warnings) console.warn(`[validator] warning: ${w.message} (${w.findingId})`);
+  for (const e of validation.errors) console.error(`[validator] error: ${e.message} (${e.findingId})`);
 
   const cbom = buildCBOM(validation.clean, { sbomAdapter }); // Phase 10
 

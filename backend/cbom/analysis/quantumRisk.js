@@ -143,7 +143,52 @@ function classifyRisk(nistQuantumLevel, dataSensitivity, isEntropyOrSalt = false
 }
 
 /**
- * Mutates and returns findings with `.nistQuantumLevel` and `.quantumRisk` set.
+ * Resolves the exposureRisk severity dimension.
+ * Independent of quantumRisk: a private key committed to a repository
+ * is a CRITICAL secret-exposure issue regardless of algorithm quantum vulnerability.
+ */
+function classifyExposureRisk(finding) {
+  const isPrivateKey =
+    (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL &&
+      (finding.materialType === MaterialType.PRIVATE_KEY ||
+       finding.materialType === 'private-key' ||
+       finding.name === 'private-key' ||
+       /private-key/i.test(finding.materialType || '') ||
+       /private-key/i.test(finding.name || ''))) ||
+    /\.(key|pem|p8|pkcs8)$/i.test(finding.filePath || '');
+
+  if (isPrivateKey && finding.filePath) {
+    return 'CRITICAL';
+  }
+
+  // Symmetric secret keys committed in files
+  if (
+    finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL &&
+    (finding.materialType === MaterialType.SECRET_KEY || finding.materialType === 'secret-key')
+  ) {
+    return 'HIGH';
+  }
+
+  // Explicit weak/hardcoded secret flags
+  if (finding.parameterSet && typeof finding.parameterSet === 'string' && finding.parameterSet.includes('weak-secret')) {
+    return 'HIGH';
+  }
+
+  // Certificates are public material
+  if (finding.assetType === AssetType.CERTIFICATE) {
+    return 'LOW';
+  }
+
+  // Salts and entropy
+  if (finding.materialType === MaterialType.SALT || finding.primitive === Primitive.DRBG) {
+    return 'NONE';
+  }
+
+  return 'NONE';
+}
+
+/**
+ * Mutates and returns findings with `.nistQuantumLevel`, `.quantumRisk`, and `.exposureRisk` set.
  */
 function classifyFindings(findings) {
   for (const f of findings) {
@@ -151,11 +196,18 @@ function classifyFindings(findings) {
     const isEntropyOrSalt = f.primitive === Primitive.DRBG || f.materialType === MaterialType.SALT || family === 'CSPRNG';
     f.nistQuantumLevel = nistQuantumLevelFor(f);
     f.quantumRisk = classifyRisk(f.nistQuantumLevel, inferDataSensitivity(f), isEntropyOrSalt);
+    f.exposureRisk = classifyExposureRisk(f);
   }
   return findings;
 }
 
-module.exports = { classifyRisk, nistQuantumLevelFor, inferDataSensitivity, classifyFindings };
+module.exports = {
+  classifyRisk,
+  classifyExposureRisk,
+  nistQuantumLevelFor,
+  inferDataSensitivity,
+  classifyFindings,
+};
 
 if (require.main === module) {
   console.log('RSA-2048, production, high sensitivity ->', classifyRisk(NistQuantumLevel.L0_BROKEN, 'high'));

@@ -28,6 +28,7 @@ function correlateFindings(findings, sbomAdapter) {
     name: f.name,
     assetType: f.assetType,
     quantumRisk: f.quantumRisk,
+    exposureRisk: f.exposureRisk,
     confidence: f.confidence,
     filePath: f.filePath,
     line: f.line,
@@ -40,7 +41,7 @@ function correlateFindings(findings, sbomAdapter) {
  * SBOM-side flag (OSV CVE from sbomAdapter, or an sbomtool anomaly passed
  * via `anomaliesByPurl` — match serializer/cyclonedx.js's
  * `sbomtool:anomaly:*` property keys if you're pulling this from that
- * output) that ALSO carries a CRITICAL/HIGH quantum-risk crypto finding.
+ * output) that ALSO carries a CRITICAL/HIGH quantum-risk or exposure-risk crypto finding.
  */
 function findCompoundingRisk(correlated, { anomaliesByPurl = new Map() } = {}) {
   const byPurl = new Map();
@@ -64,7 +65,9 @@ function findCompoundingRisk(correlated, { anomaliesByPurl = new Map() } = {}) {
   const compounding = [];
   for (const pkg of byPurl.values()) {
     const hasSbomFlag = pkg.osvCves.length > 0 || pkg.anomalies.length > 0;
-    const hasSevereCrypto = pkg.cryptoFindings.some((f) => f.quantumRisk === 'CRITICAL' || f.quantumRisk === 'HIGH');
+    const hasSevereCrypto = pkg.cryptoFindings.some(
+      (f) => f.quantumRisk === 'CRITICAL' || f.quantumRisk === 'HIGH' || f.exposureRisk === 'CRITICAL' || f.exposureRisk === 'HIGH'
+    );
     if (hasSbomFlag && hasSevereCrypto) compounding.push(pkg);
   }
 
@@ -72,12 +75,11 @@ function findCompoundingRisk(correlated, { anomaliesByPurl = new Map() } = {}) {
 }
 
 /**
- * Same shape as serialize/riskSummary.js's buildRiskSummary (critical/
- * high/medium/low counts) so both cards use identical dashboard logic,
- * plus fields the SBOM-only summary has no way to know about.
+ * Aggregates both quantumRisk and exposureRisk dimensions along with package attribution.
  */
 function buildCombinedRiskSummary(findings, correlated, compoundingResult) {
   let critical = 0, high = 0, medium = 0, low = 0;
+  let exposureCritical = 0, exposureHigh = 0, exposureMedium = 0, exposureLow = 0;
   const byPrimitive = {};
 
   for (const f of findings) {
@@ -85,12 +87,20 @@ function buildCombinedRiskSummary(findings, correlated, compoundingResult) {
     else if (f.quantumRisk === 'HIGH') high++;
     else if (f.quantumRisk === 'MEDIUM') medium++;
     else if (f.quantumRisk === 'LOW') low++;
+
+    if (f.exposureRisk === 'CRITICAL') exposureCritical++;
+    else if (f.exposureRisk === 'HIGH') exposureHigh++;
+    else if (f.exposureRisk === 'MEDIUM') exposureMedium++;
+    else if (f.exposureRisk === 'LOW') exposureLow++;
+
     if (f.primitive) byPrimitive[f.primitive] = (byPrimitive[f.primitive] || 0) + 1;
   }
 
   return {
     totalFindings: findings.length,
     critical, high, medium, low,
+    quantumRisk: { critical, high, medium, low },
+    exposureRisk: { critical: exposureCritical, high: exposureHigh, medium: exposureMedium, low: exposureLow },
     byPrimitive,
     attributedToPackage: correlated.filter((c) => c.packageContext).length,
     firstPartySource: correlated.filter((c) => !c.packageContext).length,

@@ -15,7 +15,7 @@
 //      the finding still passes through — CycloneDX's algorithmFamily is
 //      SHOULD-match-enum, not MUST.
 
-const { AssetType, Primitive, MaterialType, SourceContext } = require('../core/taxonomy');
+const { AssetType, Primitive, MaterialType, SourceContext, ExposureRisk } = require('../core/taxonomy');
 const registry = require('./registry_snapshot.json');
 
 const REGISTRY_FAMILY_SET = new Set(registry.algorithmFamilies);
@@ -23,6 +23,7 @@ const VALID_ASSET_TYPES = new Set(Object.values(AssetType));
 const VALID_PRIMITIVES = new Set(Object.values(Primitive));
 const VALID_MATERIAL_TYPES = new Set(Object.values(MaterialType));
 const VALID_SOURCE_CONTEXTS = new Set(Object.values(SourceContext));
+const VALID_EXPOSURE_RISKS = new Set(Object.values(ExposureRisk));
 
 class ValidationIssue {
   constructor({ level, field, findingId, message }) {
@@ -68,6 +69,7 @@ function validateFinding(finding) {
   checkEnum(finding.sourceContext, VALID_SOURCE_CONTEXTS, 'sourceContext', id, issues, { required: true });
   checkEnum(finding.primitive, VALID_PRIMITIVES, 'primitive', id, issues);
   checkEnum(finding.materialType, VALID_MATERIAL_TYPES, 'materialType', id, issues);
+  checkEnum(finding.exposureRisk, VALID_EXPOSURE_RISKS, 'exposureRisk', id, issues);
 
   if (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL) {
     if (!finding.materialType) {

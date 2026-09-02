@@ -12,6 +12,22 @@
 
 const fs = require('node:fs');
 
+const cryptoLibMap = require('./crypto_library_map.json');
+const { CryptoFinding, Evidence, EvidenceClass } = require('../core/models');
+const { AssetType, Primitive, ContextCategory } = require('../core/taxonomy');
+
+const PRIMITIVE_MAP = {
+  kdf: Primitive.KDF,
+  signature: Primitive.SIGNATURE,
+  mac: Primitive.MAC,
+  symmetric: Primitive.BLOCK_CIPHER,
+  hash: Primitive.HASH,
+  drbg: Primitive.DRBG,
+  asymmetric: Primitive.PKE,
+  'key-agreement': Primitive.KEY_AGREE,
+  ae: Primitive.AE,
+};
+
 class SbomAdapter {
   constructor(componentsByKey) {
     this._componentsByKey = componentsByKey; // Map<"name@version", PackageContext>
@@ -71,9 +87,7 @@ class SbomAdapter {
       const hit = this._componentsByKey.get(SbomAdapter._key(packageName, version));
       if (hit) return hit;
     }
-    // fall back to name-only match (first version found) — version pins in
-    // the target repo's manifest may not exactly match what the SBOM tool
-    // resolved if this runs before a fresh SBOM pass
+    // fall back to name-only match (first version found)
     for (const [key, ctx] of this._componentsByKey) {
       if (key.startsWith(`${packageName}@`)) return ctx;
     }
@@ -81,16 +95,123 @@ class SbomAdapter {
   }
 
   /**
-   * Best-effort: matches `node_modules/<pkg>/...` paths to a known
-   * component. Extend with your own import-resolution logic if you need
-   * this to work for non-node_modules source files too.
+   * Matches `node_modules/<pkg>/...` paths to a known component.
    */
   getContextForFile(filePath) {
-    if (!filePath.includes('node_modules')) return null;
-    const parts = filePath.split('node_modules/').pop().split('/');
-    if (!parts.length) return null;
+    const norm = (filePath || '').replace(/\\/g, '/');
+    if (!norm.includes('node_modules/')) return null;
+    const parts = norm.split('node_modules/').pop().split('/');
+    if (!parts.length || !parts[0]) return null;
     const pkgName = parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0];
     return this.getContext(pkgName);
+  }
+
+  /**
+   * Checks a package name against known crypto libraries map and keywords.
+   */
+  static getCryptoPackageInfo(packageName) {
+    if (!packageName) return null;
+    const lower = packageName.toLowerCase();
+
+    // 1. Direct hit in crypto_library_map.json
+    if (cryptoLibMap[lower]) {
+      return cryptoLibMap[lower];
+    }
+
+    // 2. Unscoped / alias match
+    const unscoped = lower.includes('/') ? lower.split('/')[1] : lower;
+    if (cryptoLibMap[unscoped]) {
+      return cryptoLibMap[unscoped];
+    }
+
+    // 3. Keyword / stem matching for common crypto package names
+    if (/^bcrypt(-nodejs|js)?$/.test(unscoped)) {
+      return {
+        cryptoCapable: true,
+        primitives: ['kdf'],
+        algorithmFamilies: ['bcrypt'],
+        notes: 'Bcrypt password hashing library',
+      };
+    }
+    if (/^(jsonwebtoken|jwt-simple|jose|jwa|jws|node-jose)$/.test(unscoped)) {
+      return {
+        cryptoCapable: true,
+        primitives: ['signature', 'mac', 'asymmetric'],
+        algorithmFamilies: ['JWT', 'HMAC', 'RSA', 'ECDSA'],
+        notes: 'JWT / JWA / JOSE library',
+      };
+    }
+    if (/^(crypto-js|node-forge|forge|tweetnacl|elliptic|noble-secp256k1)$/.test(unscoped)) {
+      return {
+        cryptoCapable: true,
+        primitives: ['symmetric', 'hash', 'signature', 'asymmetric'],
+        algorithmFamilies: ['AES', 'SHA-256', 'RSA', 'ECDSA'],
+        notes: 'General crypto library',
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Evaluates all packages in the SBOM against the crypto capability library map.
+   * Emits debug logging per component as requested.
+   */
+  findCryptoDependencies() {
+    const cryptoDeps = [];
+    for (const [key, ctx] of this._componentsByKey) {
+      const info = SbomAdapter.getCryptoPackageInfo(ctx.name);
+      const isMatch = info && info.cryptoCapable !== false;
+      console.log(`[sbomAdapter] component check: "${ctx.name}@${ctx.version}" against crypto_library_map.json -> ${isMatch ? `MATCH (${info.algorithmFamilies.join(', ')})` : 'no match'}`);
+      if (isMatch) {
+        cryptoDeps.push({
+          ...ctx,
+          cryptoInfo: info,
+        });
+      }
+    }
+    return cryptoDeps;
+  }
+
+  /**
+   * Generates SCA-level CryptoFindings for crypto packages declared in the SBOM.
+   */
+  generateScaFindings() {
+    const cryptoDeps = this.findCryptoDependencies();
+    const findings = [];
+
+    for (const dep of cryptoDeps) {
+      const info = dep.cryptoInfo;
+      const primaryFamily = (info.algorithmFamilies && info.algorithmFamilies[0]) || dep.name;
+      const primaryPrim = (info.primitives && info.primitives[0]) ? PRIMITIVE_MAP[info.primitives[0]] : null;
+      const filePath = `node_modules/${dep.name}/package.json`;
+
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: primaryFamily,
+        algorithmFamily: primaryFamily,
+        primitive: primaryPrim,
+        filePath,
+        line: 1,
+        contextCategory: ContextCategory.VENDOR,
+        sourceContext: 'live',
+      });
+
+      f.addEvidence(
+        new Evidence({
+          source: 'sca',
+          evidenceClass: EvidenceClass.SUPPORTING,
+          detail: `known crypto-capable package in dependency tree: ${dep.name}@${dep.version} (${info.notes || 'crypto library'})`,
+          rawConfidence: 0.85,
+          filePath,
+          line: 1,
+        })
+      );
+
+      findings.push(f);
+    }
+
+    return findings;
   }
 
   // ---- internals --------------------------------------------------------
@@ -100,11 +221,6 @@ class SbomAdapter {
   }
 
   static _isDev(comp) {
-    // CycloneDX doesn't have a canonical "is dev dependency" field on
-    // Component itself. If your generator stashes this in properties[]
-    // (e.g. `sbomtool:npm:development`), match it here — adjust the
-    // property name to match what YOUR src/modules generator actually
-    // writes.
     for (const prop of comp.properties || []) {
       if ((prop.name || '').endsWith('development') && prop.value === 'true') return true;
     }

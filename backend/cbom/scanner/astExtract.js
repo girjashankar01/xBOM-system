@@ -829,13 +829,55 @@ function scanRegexFallback(filePath, lines) {
   return findings;
 }
 
-function walkDirectory(dir, results = []) {
+function isCryptoPackageTarget(pkgName) {
+  const lower = (pkgName || '').toLowerCase();
+  const unscoped = lower.includes('/') ? lower.split('/')[1] : lower;
+  return /^(bcrypt.*|jwt.*|jsonwebtoken|jose|jwa|jws|node-jose|crypto-js|node-forge|forge|tweetnacl.*|elliptic|libsodium.*|sodium.*|pbkdf2|scrypt.*|argon2|hash\.js|sha\.js|aes.*|des.*|rc4.*)$/i.test(unscoped);
+}
+
+function walkPackageDir(dir, results = [], depth = 0) {
+  if (depth > 4 || !fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'test' && entry.name !== 'tests') {
+        walkPackageDir(full, results, depth + 1);
+      }
+    } else if (/\.(js|mjs|cjs)$/.test(entry.name)) {
+      results.push(full);
+    }
+  }
+}
+
+function walkNodeModules(nodeModulesDir, results = []) {
+  if (!fs.existsSync(nodeModulesDir)) return;
+  for (const entry of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const pkgName = entry.name;
+    const full = path.join(nodeModulesDir, pkgName);
+    if (pkgName.startsWith('@')) {
+      for (const sub of fs.readdirSync(full, { withFileTypes: true })) {
+        if (!sub.isDirectory()) continue;
+        const scopedName = `${pkgName}/${sub.name}`;
+        if (isCryptoPackageTarget(scopedName)) {
+          walkPackageDir(path.join(full, sub.name), results);
+        }
+      }
+    } else if (isCryptoPackageTarget(pkgName)) {
+      walkPackageDir(full, results);
+    }
+  }
+}
+
+function walkDirectory(dir, results = [], isRoot = true) {
   if (!fs.existsSync(dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
-        walkDirectory(full, results);
+      if (entry.name === 'node_modules' && isRoot) {
+        walkNodeModules(full, results);
+      } else if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
+        walkDirectory(full, results, false);
       }
     } else if (/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(entry.name)) {
       results.push(full);

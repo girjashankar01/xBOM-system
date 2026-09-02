@@ -90,6 +90,12 @@
     "algorithmFamilies": ["HMAC", "RSA", "ECDSA"],
     "notes": "Low-level JWA algorithm implementations, usually a transitive dep of jsonwebtoken/jws."
   },
+  "jws": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["mac", "signature", "asymmetric"],
+    "algorithmFamilies": ["HMAC", "RSA", "ECDSA"],
+    "notes": "JSON Web Signatures implementation, core engine behind jsonwebtoken."
+  },
   "node-jose": {
     "ecosystem": "npm", "cryptoCapable": true,
     "primitives": ["symmetric", "asymmetric", "signature", "ae"],
@@ -131,6 +137,12 @@
     "primitives": ["kdf"],
     "algorithmFamilies": ["bcrypt"],
     "notes": "Native bcrypt bindings for password hashing."
+  },
+  "bcrypt-nodejs": {
+    "ecosystem": "npm", "cryptoCapable": true,
+    "primitives": ["kdf"],
+    "algorithmFamilies": ["bcrypt"],
+    "notes": "Pure-JS bcrypt implementation for Node.js."
   },
   "bcryptjs": {
     "ecosystem": "npm", "cryptoCapable": true,

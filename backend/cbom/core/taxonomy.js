@@ -84,6 +84,15 @@ const SourceContext = Object.freeze({
   COMMENT: 'comment',
 });
 
+// Exposure risk: independent of quantum risk — committed private keys are CRITICAL
+const ExposureRisk = Object.freeze({
+  CRITICAL: 'CRITICAL',
+  HIGH: 'HIGH',
+  MEDIUM: 'MEDIUM',
+  LOW: 'LOW',
+  NONE: 'NONE',
+});
+
 // NIST PQC posture, 0 (broken today) through 5 (PQC-native). Priority
 // signal for analysis/quantumRisk.js, not a date prediction.
 const NistQuantumLevel = Object.freeze({
@@ -103,5 +112,6 @@ module.exports = {
   ContextCategory,
   EvidenceSource,
   SourceContext,
+  ExposureRisk,
   NistQuantumLevel,
 };

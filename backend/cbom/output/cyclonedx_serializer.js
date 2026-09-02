@@ -74,6 +74,7 @@ function buildCertificateProperties(f) {
 function buildCustomProperties(f) {
   const props = [];
   if (f.quantumRisk) props.push({ name: 'cbomtool:quantumRisk', value: f.quantumRisk });
+  if (f.exposureRisk) props.push({ name: 'cbomtool:exposureRisk', value: f.exposureRisk });
   if (f.nistQuantumLevel != null) props.push({ name: 'cbomtool:nistQuantumLevel', value: String(f.nistQuantumLevel) });
   if (f.confidence != null) props.push({ name: 'cbomtool:confidence', value: String(f.confidence) });
   if (f.contextCategory) props.push({ name: 'cbomtool:context', value: f.contextCategory });
