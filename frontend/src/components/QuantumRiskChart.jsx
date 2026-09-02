@@ -15,15 +15,16 @@ const LEVEL_LABEL = {
   5: 'Level 5',
 }
 
-export default function QuantumRiskChart({ byQuantumRisk }) {
-  const maxCount = Math.max(1, ...QUANTUM_LEVELS.map((l) => byQuantumRisk[l] ?? 0))
+export default function QuantumRiskChart({ byQuantumRisk = {} }) {
+  const counts = byQuantumRisk || {}
+  const maxCount = Math.max(1, ...QUANTUM_LEVELS.map((l) => counts[l] ?? 0))
 
   return (
     <div className="rounded-lg border border-border bg-surface px-5 py-4">
       <p className="text-xs uppercase tracking-wide text-dim mb-3">Assets by quantum security level</p>
       <div className="space-y-2.5">
         {QUANTUM_LEVELS.map((level) => {
-          const count = byQuantumRisk[level] ?? 0
+          const count = counts[level] ?? 0
           const tier = quantumRiskTier(level)
           return (
             <div key={level} className="flex items-center gap-3">
