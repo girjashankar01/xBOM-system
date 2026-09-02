@@ -46,7 +46,7 @@ function sleep(ms) {
 }
 
 router.post('/scan', async (req, res) => {
-  const { githubUrl } = req.body;
+  const { githubUrl, skipLlm = false } = req.body;
   if (!githubUrl) return res.status(400).json({ error: 'githubUrl is required' });
 
   let repoDir;
@@ -128,7 +128,7 @@ router.post('/scan', async (req, res) => {
     try {
       const cbomResult = await runCbomPipeline(repoDir, {
         sbom,
-        skipLlm: true,
+        skipLlm: Boolean(skipLlm),
       });
 
       if (cbomResult && cbomResult.cbom && Array.isArray(cbomResult.cbom.components)) {
