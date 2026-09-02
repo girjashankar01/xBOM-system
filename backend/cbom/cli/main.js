@@ -86,6 +86,9 @@ async function runPipeline(targetDir, options = {}) {
     throw new Error(`targetDir "${targetDir}" is not a directory`);
   }
 
+  const defaultCorpusDir = require('node:path').join(__dirname, '../retrieval/corpus');
+  const resolvedCorpusDir = corpusDir || (fs.existsSync(defaultCorpusDir) ? defaultCorpusDir : null);
+
   let sbomAdapter = passedAdapter;
   let correlation = null;
   const inMemorySbom = sbomJson || sbom;
@@ -123,7 +126,7 @@ async function runPipeline(targetDir, options = {}) {
 
   classifyFindings(rawFindings); // Phase 4, before verification so llm_agent gets real context
 
-  const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir });
+  const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir: resolvedCorpusDir });
   classifyFindings(llmFindings);
 
   const merged = aggregate([...rawFindings, ...llmFindings]); // Phase 7a

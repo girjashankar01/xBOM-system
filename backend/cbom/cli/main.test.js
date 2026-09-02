@@ -636,4 +636,94 @@ describe('CBOM Correctness & Schema Verification', () => {
     // Algorithmic quantum risk remains CRITICAL for EC
     expect(runtimeKeyFinding.quantumRisk).toBe('CRITICAL');
   });
+
+  test('LLM verification runs on non-DIRECT supporting findings and handles unreachable endpoints gracefully', async () => {
+    const { shouldVerify, verifySpan } = require('../verification/llm_agent');
+
+    // 1. Gating check: DIRECT evidence is not verified, SUPPORTING-only is verified
+    expect(shouldVerify(new Set([EvidenceClass.DIRECT]))).toBe(false);
+    expect(shouldVerify(new Set([EvidenceClass.SUPPORTING]))).toBe(true);
+    expect(shouldVerify(new Set())).toBe(true);
+
+    // 2. Unreachable endpoint test: returns null without throwing or crashing
+    const unreachableResult = await verifySpan({
+      filePath: 'customCipher.js',
+      line: 1,
+      codeText: 'function customCipher() { return "test"; }',
+      candidates: [],
+    });
+    // With unreachable or unconfigured model, gracefully returns null
+    expect(unreachableResult === null || unreachableResult instanceof CryptoFinding).toBe(true);
+  });
+
+  test('validateLlmResponse rejects invalid enum values and malformed primitive-in-family guesses', () => {
+    const { validateLlmResponse } = require('../verification/llm_agent');
+
+    // 1. Malformed primitive placed in algorithmFamily field -> rejected
+    expect(validateLlmResponse({
+      algorithmFamily: 'stream-cipher',
+      primitive: 'xor',
+      confidence: 0.9,
+    })).toBeNull();
+
+    // 2. Unknown algorithm family not in CycloneDX registry snapshot -> rejected
+    expect(validateLlmResponse({
+      algorithmFamily: 'unrecognized-homebrew-crypto',
+      primitive: 'block-cipher',
+      confidence: 0.8,
+    })).toBeNull();
+
+    // 3. Valid algorithm family and invalid primitive -> family canonicalized, primitive coerced to null
+    const res = validateLlmResponse({
+      algorithmFamily: 'chacha20',
+      primitive: 'xor',
+      confidence: 0.95,
+      reasoning: 'uses ChaCha20 constant',
+    });
+    expect(res).not.toBeNull();
+    expect(res.algorithmFamily).toBe('ChaCha20');
+    expect(res.primitive).toBeNull();
+    expect(res.confidence).toBe(0.95);
+  });
+
+  test('valid static classification is preserved and outranks lower-quality or malformed LLM guesses', () => {
+    const { aggregate } = require('../analysis/evidence');
+
+    const staticFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'ChaCha20',
+      algorithmFamily: 'ChaCha20',
+      primitive: Primitive.STREAM_CIPHER,
+      filePath: 'customStream.js',
+      line: 3,
+    });
+    staticFinding.addEvidence(new Evidence({
+      source: 'constant',
+      evidenceClass: EvidenceClass.SUPPORTING,
+      detail: 'known-constant byte match for ChaCha20',
+      rawConfidence: 0.5,
+    }));
+
+    const malformedLlmFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'stream-cipher',
+      algorithmFamily: 'stream-cipher',
+      primitive: null,
+      filePath: 'customStream.js',
+      line: 3,
+    });
+    malformedLlmFinding.addEvidence(new Evidence({
+      source: 'llm',
+      evidenceClass: EvidenceClass.INTERPRETIVE,
+      detail: 'xor loop',
+      rawConfidence: 0.9,
+    }));
+
+    // If a malformed LLM finding were somehow produced, it must never overwrite the static finding's canonical fields
+    const merged = aggregate([staticFinding, malformedLlmFinding]);
+    const chacha = merged.find(f => f.algorithmFamily === 'ChaCha20');
+    expect(chacha).toBeDefined();
+    expect(chacha.algorithmFamily).toBe('ChaCha20');
+    expect(chacha.primitive).toBe(Primitive.STREAM_CIPHER);
+  });
 });

@@ -25,9 +25,64 @@ const { Primitive } = require('../core/taxonomy');
 const registry = require('./registry_snapshot.json');
 
 const OFFLINE_LLM_URL = process.env.OFFLINE_LLM_URL || 'http://localhost:11434/api/chat';
-const OFFLINE_LLM_MODEL = process.env.OFFLINE_LLM_MODEL || 'qwen2.5-coder:7b';
+const OFFLINE_LLM_MODEL = process.env.OFFLINE_LLM_MODEL || 'qwen2.5-coder:1.5b';
 
 const VALID_PRIMITIVES = new Set(Object.values(Primitive));
+const VALID_FAMILIES_MAP = new Map(registry.algorithmFamilies.map((f) => [f.toLowerCase(), f]));
+
+// Standard naming aliases mapped to canonical CycloneDX registry families
+VALID_FAMILIES_MAP.set('chacha', 'ChaCha');
+VALID_FAMILIES_MAP.set('chacha20-poly1305', 'ChaCha20');
+VALID_FAMILIES_MAP.set('salsa20', 'Salsa20');
+VALID_FAMILIES_MAP.set('aes-gcm', 'AES');
+VALID_FAMILIES_MAP.set('aes-cbc', 'AES');
+VALID_FAMILIES_MAP.set('sha256', 'SHA-2');
+VALID_FAMILIES_MAP.set('sha-256', 'SHA-2');
+VALID_FAMILIES_MAP.set('sha512', 'SHA-2');
+VALID_FAMILIES_MAP.set('sha-512', 'SHA-2');
+VALID_FAMILIES_MAP.set('sha1', 'SHA-1');
+VALID_FAMILIES_MAP.set('sha-1', 'SHA-1');
+
+/**
+ * Validates and canonicalizes raw LLM output against the CycloneDX algorithm registry
+ * and primitive enums. Discards malformed guesses (e.g. primitives in the family field).
+ */
+function validateLlmResponse(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const rawFamily = (parsed.algorithmFamily || '').trim();
+  if (!rawFamily || rawFamily === 'null' || rawFamily.toLowerCase() === 'unknown') {
+    return null;
+  }
+
+  // Reject if the model mistakenly placed a primitive type in the algorithmFamily field
+  if (VALID_PRIMITIVES.has(rawFamily.toLowerCase())) {
+    console.warn(`[llm_agent] rejected malformed LLM response: algorithmFamily="${rawFamily}" is a primitive enum value, not an algorithm family`);
+    return null;
+  }
+
+  // Validate against canonical registry families
+  const canonicalFamily = VALID_FAMILIES_MAP.get(rawFamily.toLowerCase());
+  if (!canonicalFamily) {
+    console.warn(`[llm_agent] rejected invalid algorithmFamily "${rawFamily}" — not catalogued in CycloneDX algorithm registry snapshot`);
+    return null;
+  }
+
+  // Validate primitive: must be in VALID_PRIMITIVES enum or coerced to null
+  const rawPrimitive = (parsed.primitive || '').trim().toLowerCase();
+  const canonicalPrimitive = VALID_PRIMITIVES.has(rawPrimitive) ? rawPrimitive : null;
+
+  const rawConfidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
+  if (rawConfidence <= 0) return null;
+
+  return {
+    algorithmFamily: canonicalFamily,
+    primitive: canonicalPrimitive,
+    parameterSet: parsed.parameterSet || null,
+    confidence: rawConfidence,
+    reasoning: parsed.reasoning || '',
+  };
+}
 
 /**
  * Gate: only verify a span if nothing has already produced DIRECT
@@ -51,8 +106,9 @@ function buildPrompt({ codeText, filePath, candidates }) {
         'You are a static-analysis assistant identifying cryptographic algorithm usage in source code. ' +
         'Respond with ONLY a JSON object, no markdown fences, no prose. ' +
         `Valid "primitive" values: ${Array.from(VALID_PRIMITIVES).join(', ')}. ` +
-        `Prefer an "algorithmFamily" from this list if it genuinely matches: ${registry.algorithmFamilies.join(', ')}. ` +
-        'If the code does not use cryptography, or you are not reasonably confident, set "algorithmFamily" to null. ' +
+        `"algorithmFamily" MUST be a specific named algorithm from this list if it matches: ${registry.algorithmFamilies.join(', ')}. ` +
+        'CRITICAL: Do NOT set "algorithmFamily" to a primitive type (like "stream-cipher", "block-cipher", or "hash"). ' +
+        'If the specific algorithm is not in the list or the code does not use cryptography, set "algorithmFamily" to null. ' +
         'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, ' +
         '"confidence": number (0-1), "reasoning": string (max 2 sentences)}',
     },
@@ -67,6 +123,8 @@ function buildPrompt({ codeText, filePath, candidates }) {
 
 /** Ollama /api/chat shape. Swap this function's body for another endpoint. */
 async function callLLM(messages) {
+  console.log(`[llm_agent] Requesting Ollama endpoint ${OFFLINE_LLM_URL} (model: ${OFFLINE_LLM_MODEL})`);
+  console.log('[llm_agent] Raw Prompt Messages:\n', JSON.stringify(messages, null, 2));
   const res = await fetch(OFFLINE_LLM_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,9 +134,9 @@ async function callLLM(messages) {
     throw new Error(`Offline LLM endpoint ${OFFLINE_LLM_URL} returned ${res.status}`);
   }
   const data = await res.json();
-  // Ollama /api/chat: { message: { role, content } }. Adjust if using a
-  // different server's response envelope.
-  return data.message?.content ?? '';
+  const content = data.message?.content ?? '';
+  console.log('[llm_agent] Raw LLM Response Content:\n', content);
+  return content;
 }
 
 function parseModelJson(raw) {
@@ -93,30 +151,27 @@ function parseModelJson(raw) {
 /**
  * Verifies one candidate span. Returns a CryptoFinding with a single
  * INTERPRETIVE Evidence entry, or null if the model found nothing / the
- * call failed / the response didn't parse — failure here should never
- * crash a scan, it just means this span gets no LLM opinion.
+ * call failed / the response didn't parse / validation failed.
  */
 async function verifySpan({ filePath, line, codeText, candidates = [], contextCategory = 'unknown' }) {
-  let parsed;
+  let validated;
   try {
     const raw = await callLLM(buildPrompt({ codeText, filePath, candidates }));
-    parsed = parseModelJson(raw);
+    const parsed = parseModelJson(raw);
+    validated = validateLlmResponse(parsed);
   } catch (err) {
     console.warn(`[llm_agent] verification failed for ${filePath}:${line} — ${err.message}`);
     return null;
   }
 
-  if (!parsed || !parsed.algorithmFamily) return null;
-
-  const primitive = VALID_PRIMITIVES.has(parsed.primitive) ? parsed.primitive : null;
-  const rawConfidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
+  if (!validated || !validated.algorithmFamily) return null;
 
   const finding = new CryptoFinding({
     assetType: 'algorithm',
-    name: parsed.algorithmFamily,
-    algorithmFamily: parsed.algorithmFamily,
-    primitive,
-    parameterSet: parsed.parameterSet || null,
+    name: validated.algorithmFamily,
+    algorithmFamily: validated.algorithmFamily,
+    primitive: validated.primitive,
+    parameterSet: validated.parameterSet,
     filePath,
     line,
     contextCategory,
@@ -125,8 +180,8 @@ async function verifySpan({ filePath, line, codeText, candidates = [], contextCa
   finding.addEvidence(new Evidence({
     source: 'llm',
     evidenceClass: EvidenceClass.INTERPRETIVE,
-    detail: parsed.reasoning || '',
-    rawConfidence,
+    detail: validated.reasoning || '',
+    rawConfidence: validated.confidence,
     filePath,
     line,
   }));
@@ -134,7 +189,7 @@ async function verifySpan({ filePath, line, codeText, candidates = [], contextCa
   return finding;
 }
 
-module.exports = { shouldVerify, verifySpan };
+module.exports = { shouldVerify, verifySpan, validateLlmResponse };
 
 if (require.main === module) {
   verifySpan({
