@@ -124,7 +124,14 @@ export default function App() {
               </div>
             )}
 
-            {activeTab === 'cbom' && <CbomTab assets={cryptoAssets} repoUrl={repoUrl} />}
+            {activeTab === 'cbom' && (
+              <CbomTab
+                assets={cryptoAssets}
+                repoUrl={repoUrl}
+                cbomCorrelation={sbom.cbomCorrelation}
+                rawCryptoComponents={sbom.cryptoComponents}
+              />
+            )}
           </div>
         )}
       </main>

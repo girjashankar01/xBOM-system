@@ -8,6 +8,11 @@
 // <a href> like the SBOM side's export was originally planned to be.
 
 function toCycloneDxComponent(asset) {
+  // If already an authentic backend CycloneDX component
+  if (asset.type === 'cryptographic-asset' && asset.cryptoProperties) {
+    return asset
+  }
+
   const cryptoProperties = { assetType: asset.assetType }
 
   if (asset.algorithmProperties) {
@@ -25,8 +30,11 @@ function toCycloneDxComponent(asset) {
   }
 
   const properties = [
-    { name: 'cbomtool:confidence', value: asset.confidence },
-    { name: 'cbomtool:evidenceSources', value: (asset.evidenceSources || []).join(',') || 'unknown' },
+    { name: 'cbomtool:confidence', value: String(asset.confidenceScore ?? asset.confidence) },
+    { name: 'cbomtool:quantumRisk', value: asset.quantumRisk || (asset.quantumSecurityLevel === 0 ? 'CRITICAL' : 'LOW') },
+    { name: 'cbomtool:exposureRisk', value: asset.exposureRisk || 'NONE' },
+    { name: 'cbomtool:sourceContext', value: asset.sourceContext || 'live' },
+    { name: 'cbomtool:evidenceSources', value: (asset.evidenceSources || []).join(',') || 'static' },
   ]
   if (asset.sourceFile) {
     properties.push({
@@ -47,17 +55,26 @@ function toCycloneDxComponent(asset) {
 export function buildCbomDocument(assets, repoUrl) {
   return {
     bomFormat: 'CycloneDX',
-    specVersion: '1.6',
+    specVersion: '1.7',
     version: 1,
     serialNumber: `urn:uuid:cbom-${Date.now()}`,
     metadata: {
       timestamp: new Date().toISOString(),
+      tools: {
+        components: [
+          {
+            type: 'application',
+            name: 'sih260077-cbom-scanner',
+            version: '1.0.0',
+          },
+        ],
+      },
       ...(repoUrl ? { component: { type: 'application', name: repoUrl } } : {}),
     },
     components: assets.map(toCycloneDxComponent),
     dependencies: assets
       .filter((a) => a.dependsOn && a.dependsOn.length > 0)
-      .map((a) => ({ ref: a.bomRef, dependsOn: a.dependsOn })),
+      .map((a) => ({ ref: a.bomRef || a['bom-ref'], dependsOn: a.dependsOn })),
   }
 }
 

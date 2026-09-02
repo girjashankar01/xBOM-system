@@ -39,6 +39,18 @@ export const EVIDENCE_LABEL = {
   llm: 'LLM verification',
 }
 
+export function toCategoricalConfidence(val) {
+  if (typeof val === 'string' && CONFIDENCE_ORDER.includes(val)) {
+    return val
+  }
+  const num = typeof val === 'number' ? val : parseFloat(val)
+  if (isNaN(num)) return 'low'
+  if (num >= 0.85) return 'very-high'
+  if (num >= 0.60) return 'high'
+  if (num >= 0.30) return 'medium'
+  return 'low'
+}
+
 // Maps a NIST quantum security level to one of the app's existing severity
 // colors, per the blueprint's "0=red, 1-2=orange, 3-5=green" scale.
 export function quantumRiskTier(level) {
@@ -57,18 +69,68 @@ export function quantumRiskLabel(level) {
 // component (nested under cryptoProperties).
 function normalize(raw) {
   const cp = raw.cryptoProperties
-  if (!cp) return raw // already flat
+  const props = raw.properties || []
+  const getProp = (name) => props.find((p) => p.name === name)?.value
+
+  const rawConf = raw.confidence ?? getProp('cbomtool:confidence')
+  const confidence = toCategoricalConfidence(rawConf)
+  const confidenceScore = rawConf != null ? (typeof rawConf === 'number' ? rawConf : parseFloat(rawConf)) : null
+
+  const rawQLevel = cp?.algorithmProperties?.nistQuantumSecurityLevel ??
+    getProp('cbomtool:nistQuantumLevel') ??
+    raw.nistQuantumLevel ??
+    raw.quantumSecurityLevel
+
+  const quantumSecurityLevel = rawQLevel != null
+    ? Number(rawQLevel)
+    : (raw.quantumRisk === 'CRITICAL' || raw.quantumRisk === 'HIGH' ? 0 : 1)
+
+  const sourceFile = raw.sourceFile || raw.filePath || getProp('cbomtool:filePath')
+  const sourceLine = raw.sourceLine || (raw.line != null ? Number(raw.line) : undefined) || (getProp('cbomtool:line') ? Number(getProp('cbomtool:line')) : undefined)
+  const sourceContext = raw.sourceContext || getProp('cbomtool:sourceContext') || 'live'
+
+  const evidenceSources = (raw.evidenceSources && raw.evidenceSources.length > 0)
+    ? raw.evidenceSources
+    : props
+        .filter((p) => p.name.startsWith('cbomtool:evidence:'))
+        .map((p) => {
+          const src = p.name.replace('cbomtool:evidence:', '')
+          if (src === 'ast' || src === 'keysCerts' || src === 'constants') return 'static'
+          if (src === 'sbom_sca') return 'sca'
+          if (src === 'vectorSearch') return 'embedding'
+          if (src === 'llm') return 'llm'
+          return 'static'
+        })
+
+  if (!cp) {
+    return {
+      ...raw,
+      sourceFile,
+      sourceLine,
+      sourceContext,
+      confidence,
+      confidenceScore: isNaN(confidenceScore) ? null : confidenceScore,
+      quantumSecurityLevel,
+      evidenceSources: Array.from(new Set(evidenceSources)),
+      quantumRisk: raw.quantumRisk || getProp('cbomtool:quantumRisk') || null,
+      exposureRisk: raw.exposureRisk || getProp('cbomtool:exposureRisk') || 'NONE',
+    }
+  }
 
   return {
     bomRef: raw['bom-ref'] || raw.bomRef,
     name: raw.name,
     assetType: cp.assetType,
-    sourceFile: raw.sourceFile,
-    sourceLine: raw.sourceLine,
-    quantumSecurityLevel: cp.algorithmProperties?.nistQuantumSecurityLevel ?? 0,
-    classicalSecurityLevel: cp.algorithmProperties?.classicalSecurityLevel,
-    confidence: raw.confidence || 'low',
-    evidenceSources: raw.evidenceSources || [],
+    sourceFile,
+    sourceLine,
+    sourceContext,
+    quantumSecurityLevel,
+    classicalSecurityLevel: cp.algorithmProperties?.classicalSecurityLevel ?? raw.classicalSecurityLevel,
+    confidence,
+    confidenceScore: isNaN(confidenceScore) ? null : confidenceScore,
+    quantumRisk: raw.quantumRisk || getProp('cbomtool:quantumRisk') || null,
+    exposureRisk: raw.exposureRisk || getProp('cbomtool:exposureRisk') || 'NONE',
+    evidenceSources: Array.from(new Set(evidenceSources.length ? evidenceSources : ['static'])),
     algorithmProperties: cp.algorithmProperties,
     certificateProperties: cp.certificateProperties,
     relatedCryptoMaterialProperties: cp.relatedCryptoMaterialProperties,
@@ -82,8 +144,12 @@ export function enrichCryptoAsset(raw) {
     ...a,
     quantumSecurityLevel: a.quantumSecurityLevel ?? 0,
     confidence: a.confidence || 'low',
+    confidenceScore: a.confidenceScore ?? null,
+    sourceContext: a.sourceContext || 'live',
     evidenceSources: a.evidenceSources || [],
     riskTier: quantumRiskTier(a.quantumSecurityLevel ?? 0),
+    exposureRisk: a.exposureRisk || 'NONE',
+    quantumRisk: a.quantumRisk || null,
   }
 }
 
@@ -109,28 +175,50 @@ export function isCertExpiringSoon(asset, withinDays = 90) {
   return days >= 0 && days <= withinDays
 }
 
-export function buildCbomSummary(assets) {
+export function buildCbomSummary(assets, correlationSummary = null) {
   const byAssetType = Object.fromEntries(ASSET_TYPE_ORDER.map((t) => [t, 0]))
   const byQuantumRisk = Object.fromEntries(QUANTUM_LEVELS.map((l) => [l, 0]))
+  const byExposureRisk = Object.fromEntries(EXPOSURE_RISK_ORDER.map((e) => [e, 0]))
   const byConfidence = Object.fromEntries(CONFIDENCE_ORDER.map((c) => [c, 0]))
   let flaggedForReview = 0
   let certsExpiringSoon = 0
+  let exposedSecretsCount = 0
 
   for (const a of assets) {
     if (a.assetType in byAssetType) byAssetType[a.assetType] += 1
     if (a.quantumSecurityLevel in byQuantumRisk) byQuantumRisk[a.quantumSecurityLevel] += 1
+    if (a.exposureRisk in byExposureRisk) byExposureRisk[a.exposureRisk] += 1
     if (a.confidence in byConfidence) byConfidence[a.confidence] += 1
     if (a.confidence === 'low') flaggedForReview += 1
     if (isCertExpiringSoon(a)) certsExpiringSoon += 1
+    if (a.exposureRisk === 'CRITICAL' || a.exposureRisk === 'HIGH') exposedSecretsCount += 1
   }
 
+  // Use backend's reconciled exposureRisk summary if provided
+  const exposureRisk = correlationSummary?.exposureRisk
+    ? {
+        CRITICAL: correlationSummary.exposureRisk.critical ?? correlationSummary.exposureRisk.CRITICAL ?? 0,
+        HIGH: correlationSummary.exposureRisk.high ?? correlationSummary.exposureRisk.HIGH ?? 0,
+        MEDIUM: correlationSummary.exposureRisk.medium ?? correlationSummary.exposureRisk.MEDIUM ?? 0,
+        LOW: correlationSummary.exposureRisk.low ?? correlationSummary.exposureRisk.LOW ?? 0,
+        NONE: correlationSummary.exposureRisk.none ?? correlationSummary.exposureRisk.NONE ?? 0,
+      }
+    : byExposureRisk
+
   return {
-    totalAssets: assets.length,
+    totalAssets: correlationSummary?.totalFindings ?? assets.length,
     byAssetType,
     byQuantumRisk,
+    byExposureRisk: exposureRisk,
+    exposureRisk,
     byConfidence,
     flaggedForReview,
     certsExpiringSoon,
+    exposedSecretsCount: (exposureRisk.CRITICAL ?? 0) + (exposureRisk.HIGH ?? 0) || exposedSecretsCount,
+    firstPartySource: correlationSummary?.firstPartySource ?? assets.filter((a) => !a.sourceFile?.startsWith('node_modules/')).length,
+    attributedToPackage: correlationSummary?.attributedToPackage ?? assets.filter((a) => a.sourceFile?.startsWith('node_modules/')).length,
+    compoundingCount: correlationSummary?.compoundingCount ?? 0,
+    compoundingPackages: correlationSummary?.compoundingPackages ?? [],
   }
 }
 

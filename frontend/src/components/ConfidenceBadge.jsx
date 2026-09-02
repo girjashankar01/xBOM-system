@@ -7,15 +7,18 @@ const STYLES = {
   low: 'bg-high/15 text-high border-high/30',
 }
 
-export default function ConfidenceBadge({ confidence, size = 'sm' }) {
+export default function ConfidenceBadge({ confidence, score, size = 'sm' }) {
   if (!confidence) return null
   const padding = size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'
+  const scoreText = score != null && typeof score === 'number' && !isNaN(score) ? `(${score.toFixed(2)})` : null
 
   return (
     <span
+      title="Computed confidence score based on detection method and context"
       className={`inline-flex items-center gap-1 rounded-full border font-mono font-medium ${padding} ${STYLES[confidence]}`}
     >
-      {CONFIDENCE_LABEL[confidence]}
+      <span>{CONFIDENCE_LABEL[confidence]}</span>
+      {scoreText && <span className="opacity-80 text-[10px]">{scoreText}</span>}
     </span>
   )
 }

@@ -6,7 +6,7 @@ import { buildCbomSummary, enrichCryptoAsset } from '../utils/cbomTransform'
 import { MOCK_CBOM_ASSETS } from '../data/mockCbomAssets'
 import { downloadCbomJson } from '../utils/cbomExport'
 
-export default function CbomTab({ assets, repoUrl }) {
+export default function CbomTab({ assets, repoUrl, cbomCorrelation, rawCryptoComponents }) {
   const [showSample, setShowSample] = useState(false)
 
   const displayAssets = useMemo(() => {
@@ -14,7 +14,10 @@ export default function CbomTab({ assets, repoUrl }) {
     return showSample ? MOCK_CBOM_ASSETS.map(enrichCryptoAsset) : []
   }, [assets, showSample])
 
-  const summary = useMemo(() => buildCbomSummary(displayAssets), [displayAssets])
+  const summary = useMemo(
+    () => buildCbomSummary(displayAssets, cbomCorrelation?.summary),
+    [displayAssets, cbomCorrelation]
+  )
 
   if (assets.length === 0 && !showSample) {
     return (
@@ -46,13 +49,41 @@ export default function CbomTab({ assets, repoUrl }) {
         </div>
       )}
 
+      {/* Compounding Supply Chain Risk Banner */}
+      {summary.compoundingCount > 0 && (
+        <div className="rounded-lg border border-critical/40 bg-critical/10 p-4 animate-fade-in flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-critical font-semibold text-sm">
+            <span>⚠️ Compounding Supply Chain Risk Detected ({summary.compoundingCount} package{summary.compoundingCount > 1 ? 's' : ''})</span>
+          </div>
+          <p className="text-xs text-muted leading-relaxed">
+            The following dependenc{summary.compoundingCount > 1 ? 'ies carry' : 'y carries'} <strong>both</strong> an active unpatched OSV vulnerability and a severe (Critical/High) cryptographic finding. This joint exposure represents a high-risk supply chain vector:
+          </p>
+          <div className="flex flex-wrap gap-2 mt-1">
+            {summary.compoundingPackages.map((pkg) => (
+              <span
+                key={pkg}
+                className="inline-flex items-center rounded-md border border-critical/40 bg-critical/20 px-2.5 py-1 text-xs font-mono font-medium text-critical"
+              >
+                {pkg}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-baseline justify-between">
         <div>
           <h2 className="text-lg font-semibold text-text">Cryptography findings</h2>
-          <p className="text-xs text-dim font-mono mt-0.5 truncate max-w-md">{repoUrl}</p>
+          <div className="flex items-center gap-3 mt-0.5">
+            <p className="text-xs text-dim font-mono truncate max-w-md">{repoUrl}</p>
+            <span className="text-xs text-dim font-mono">•</span>
+            <p className="text-xs font-mono text-muted">
+              {summary.firstPartySource} First-Party / {summary.attributedToPackage} Third-Party findings
+            </p>
+          </div>
         </div>
         <button
-          onClick={() => downloadCbomJson(displayAssets, repoUrl, isSample ? 'cbom-sample.json' : 'cbom.json')}
+          onClick={() => downloadCbomJson(rawCryptoComponents || displayAssets, repoUrl, isSample ? 'cbom-sample.json' : 'cbom.json')}
           className="text-xs text-muted hover:text-text border border-border rounded-md px-3 py-1.5 transition-colors whitespace-nowrap"
         >
           Export CBOM (JSON)

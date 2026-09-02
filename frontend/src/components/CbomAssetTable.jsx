@@ -223,11 +223,21 @@ function AssetRow({ asset: a, isExpanded, onToggle }) {
         onClick={onToggle}
         className="w-full grid grid-cols-[1fr_120px_150px_70px_100px_170px_28px] gap-2 px-4 py-3 text-left items-center hover:bg-raised/60 transition-colors"
       >
-        <span className="font-mono text-sm text-text truncate">{a.name}</span>
+        <div className="flex items-center gap-2 truncate">
+          <span className="font-mono text-sm text-text truncate">{a.name}</span>
+          {a.sourceContext === 'comment' && (
+            <span
+              className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono font-medium bg-dim/20 text-dim border border-dim/30 whitespace-nowrap"
+              title="Found in comments or documentation code (inert, non-live execution)"
+            >
+              Comment
+            </span>
+          )}
+        </div>
         <span className="text-xs text-muted truncate">{ASSET_TYPE_LABEL[a.assetType] || a.assetType}</span>
         <span className="text-xs text-muted truncate">{formatPrimitiveLabel(a)}</span>
         <QuantumRiskBadge level={a.quantumSecurityLevel} />
-        <ConfidenceBadge confidence={a.confidence} />
+        <ConfidenceBadge confidence={a.confidence} score={a.confidenceScore} />
         <span className="font-mono text-xs text-dim truncate">{formatSourceLabel(a)}</span>
         <span className={`text-dim text-xs transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
           ▾
@@ -248,7 +258,15 @@ function AssetRow({ asset: a, isExpanded, onToggle }) {
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <p className="text-xs uppercase tracking-wide text-dim mb-1.5">Detected by</p>
+              <p className="text-xs uppercase tracking-wide text-dim mb-1.5">Confidence & Detection</p>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <ConfidenceBadge confidence={a.confidence} score={a.confidenceScore} size="md" />
+                {a.sourceContext === 'comment' && (
+                  <span className="inline-flex items-center rounded-md border border-dim/30 bg-dim/20 px-2 py-0.5 text-[11px] font-mono text-dim">
+                    Inert (Comment / Doc)
+                  </span>
+                )}
+              </div>
               <div className="flex flex-wrap gap-2">
                 {(a.evidenceSources.length ? a.evidenceSources : ['—']).map((src, i) => (
                   <span
@@ -288,6 +306,26 @@ function AssetRow({ asset: a, isExpanded, onToggle }) {
                 <p className="text-sm text-muted font-mono">{a.classicalSecurityLevel}-bit</p>
               </div>
             )}
+
+            <div>
+              <p className="text-xs uppercase tracking-wide text-dim mb-1.5">Risk Assessment</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-md border border-border bg-raised px-2 py-1 text-[11px] font-mono text-muted">
+                  Quantum: {a.quantumRisk || (a.quantumSecurityLevel === 0 ? 'CRITICAL' : 'LOW')}
+                </span>
+                <span
+                  className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-mono font-semibold ${
+                    a.exposureRisk === 'CRITICAL'
+                      ? 'border-red-500/50 bg-red-500/10 text-red-400'
+                      : a.exposureRisk === 'HIGH'
+                      ? 'border-orange-500/50 bg-orange-500/10 text-orange-400'
+                      : 'border-border bg-raised text-muted'
+                  }`}
+                >
+                  Exposure: {a.exposureRisk || 'NONE'}
+                </span>
+              </div>
+            </div>
 
             {a.dependsOn && a.dependsOn.length > 0 && (
               <div className="sm:col-span-2">

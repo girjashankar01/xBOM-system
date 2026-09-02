@@ -1,130 +1,424 @@
-# SBOM_260077
+# SIH260077 — Next-Gen SBOM & CBOM Cryptographic Security Platform
 
-A tool that takes a GitHub repo URL and generates a security-focused Software Bill of Materials (SBOM): every npm dependency, known vulnerabilities, and a handful of anomaly checks (typosquatting, risky licenses, suspicious install scripts, and more) — output as a standard CycloneDX JSON report.
-
----
-
-## Requirements
-
-- **Node.js 18+** and **npm** — check with `node -v` / `npm -v`
-- **git** — needs to be callable from the command line (`git --version`)
-- **Windows only:** use **PowerShell**, not the old Command Prompt (`cmd.exe`) — it's already the default terminal in VS Code and Windows Terminal, and every command below assumes it. `curl` and `python3` (as `py`) both ship with modern Windows, so no extra installs needed.
+An end-to-end Software Bill of Materials (**SBOM**) and Cryptography Bill of Materials (**CBOM**) analysis engine. It ingests any public Git repository, inspects software dependencies, enriches vulnerability feeds, statically traverses ASTs to detect code-level cryptographic primitives, attributes packages to crypto capabilities, scores multi-dimensional post-quantum and secret-exposure risk, verifies ambiguous sites via local in-process vector embeddings + offline LLM verification, and delivers a unified, interactive CycloneDX v1.7 dashboard.
 
 ---
 
-## Setup
+## Table of Contents
+1. [Architecture Overview](#1-architecture-overview)
+2. [End-to-End Request Trace](#2-end-to-end-request-trace)
+3. [SBOM Generation Pipeline](#3-sbom-generation-pipeline)
+4. [CBOM Detection & Risk Analysis Pipeline](#4-cbom-detection--risk-analysis-pipeline)
+5. [In-Process Embedder & Offline LLM Verification (Phases 5 & 6)](#5-in-process-embedder--offline-llm-verification)
+6. [Frontend Data Contract & Mapping](#6-frontend-data-contract--mapping)
+7. [System Data Flow Architecture](#7-system-data-flow-architecture)
+8. [Known Limitations](#8-known-limitations)
+9. [Installation & Run Guide](#9-installation--run-guide)
+
+---
+
+## 1. Architecture Overview
+
+```
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                           REACT FRONTEND (Vite)                       │
+ │  • Software (SBOM) Tab: Vulnerabilities, Anomalies, License Compliance │
+ │  • Cryptography (CBOM) Tab: NIST Quantum Levels, Exposure Risk, Trees  │
+ └───────────────────────────────────┬────────────────────────────────────┘
+                                     │ HTTP (POST /api/scan)
+                                     ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                      EXPRESS BACKEND (Node.js)                         │
+ │                                                                        │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ 1. INGEST & SBOM ENGINE                                          │  │
+ │  │  • Git shallow clone (`repoIngest.js`)                           │  │
+ │  │  • Lockfile parser v2/v3 (`npmLockParser.js`)                    │  │
+ │  │  • npm registry cache (`npmCache.js`) & OSV client (`osv.js`)   │  │
+ │  │  • Anomaly detectors: typosquat, staleness, pinning, scripts     │  │
+ │  │  • CycloneDX v1.7 SBOM serializer (`cyclonedx.js`)               │  │
+ │  └──────────────────────────────────┬───────────────────────────────┘  │
+ │                                     ▼                                  │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ 2. CBOM DETECTION ENGINE                                         │  │
+ │  │  • AST Visitor (`astExtract.js`): crypto, bcrypt, JWT, CryptoJS │  │
+ │  │  • PEM File Scanner (`keysCerts.js`): private keys, X.509 certs  │  │
+ │  │  • Constant Matcher (`constants.js`): AES S-box, ChaCha20 sigma │  │
+ │  │  • SCA Package Attributor (`sbomAdapter.js` + library map)       │  │
+ │  │  • Context Classifier (`classify.js`): prod, test, vendor, live  │  │
+ │  └──────────────────────────────────┬───────────────────────────────┘  │
+ │                                     ▼                                  │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ 3. VECTOR RETRIEVAL & GATED LLM VERIFICATION                     │  │
+ │  │  • AST span extractor (`embedder.js`)                            │  │
+ │  │  • In-process `@xenova/transformers` (`all-MiniLM-L6-v2` ONNX)   │  │
+ │  │  • Cosine candidate retriever (`vectorSearch.js`)                │  │
+ │  │  • Gated Ollama client (`llm_agent.js` with `qwen2.5-coder`)     │  │
+ │  │  • Strict enum validator (`validateLlmResponse`)                 │  │
+ │  └──────────────────────────────────┬───────────────────────────────┘  │
+ │                                     ▼                                  │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ 4. AGGREGATION, SCORING, VALIDATION & CORRELATION                │  │
+ │  │  • Multi-detector evidence aggregator (`evidence.js`)            │  │
+ │  │  • Dynamic confidence engine (`confidence.js`)                   │  │
+ │  │  • Quantum risk (NIST L0-L5) & exposure risk (`quantumRisk.js`)  │  │
+ │  │  • CycloneDX validator & serializer (`cyclonedx_serializer.js`)  │  │
+ │  │  • SBOM-CBOM cross-correlation engine (`correlation.js`)         │  │
+ │  └──────────────────────────────────────────────────────────────────┘  │
+ └────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. End-to-End Request Trace
+
+When a user submits a repository URL via `POST /api/scan`, execution proceeds sequentially across modules:
+
+1. **`backend/src/routes/scan.routes.js`**: Receives `{ githubUrl }`.
+2. **`backend/src/modules/ingest/repoIngest.js` (`cloneRepo`)**: Executes a shallow `git clone --depth 1` into a unique temporary directory in the OS temp directory.
+3. **`backend/src/modules/ingest/repoIngest.js` (`findLockfile`)**: Locates `package-lock.json`.
+4. **`backend/src/modules/parse/npmLockParser.js` (`parseLockfile`)**: Parses npm lockfile format v2/v3, extracting all direct and transitive packages, purls, versions, install script flags, and dependency graph relationships.
+5. **`backend/src/modules/cache/npmCache.js` & `backend/src/modules/enrich/npmRegistry.js`**: Fetches registry metadata with an in-memory TTL cache and concurrency throttle (10 parallel requests) to avoid registry rate limits.
+6. **`backend/src/modules/enrich/osv.js` (`queryOsv`)**: Batches package PURLs into chunks of 500 and queries `https://api.osv.dev/v1/querybatch` to identify known CVEs/GHSAs.
+7. **`backend/src/modules/anomaly/*.js` (`detectAnomalies`)**:
+   - `typosquat.js`: Checks names against top 500 npm packages using Levenshtein distance $\le 2$.
+   - `freshness.js`: Flags unmaintained packages (>2 years without an update).
+   - `versionPinning.js`: Flags loose version constraints (`^`, `~`, `*`, `latest`).
+   - `installScript.js`: Flags packages executing `preinstall`, `install`, or `postinstall` lifecycle scripts.
+8. **`backend/src/modules/serialize/cyclonedx.js` (`buildCycloneDX`)**: Assembles standard CycloneDX v1.7 software BOM components, anomaly annotations, and vulnerability lists.
+9. **`backend/cbom/cli/main.js` (`runPipeline`)**:
+   - **Phase 1**: `SbomAdapter.fromCycloneDxJson` loads the SBOM and maps package dependencies.
+   - **Phase 2**: `scanner/astExtract.js` runs Babel AST parsing across all target `.js`/`.mjs`/`.ts` files.
+   - **Phase 2.5**: `scanner/keysCerts.js` parses PEM certificate and private key files on disk.
+   - **Phase 3**: `scanner/constants.js` scans file buffers for cryptographic magic byte constants.
+   - **Phase 3.5**: `sbomAdapter.generateScaFindings` identifies crypto-capable npm packages from the dependency tree.
+   - **Phase 4**: `context_classifier/classify.js` categorizes code context (production, test, vendor).
+   - **Phase 5 & 6**: `runVerification` gates non-direct findings, extracts AST function spans, queries local ONNX embeddings, prompts Ollama, and validates responses.
+   - **Phase 7a**: `analysis/evidence.js` (`aggregate`) merges per-detector findings within a 2-line window without overwriting static truth.
+   - **Phase 7b**: `analysis/confidence.js` (`scoreFindings`) computes dynamic confidence (0.0 to 1.0).
+   - **Phase 8**: `analysis/quantumRisk.js` (`classifyFindings`) scores quantum risk (NIST levels) and exposure risk.
+   - **Phase 9**: `validator/validate.js` validates CycloneDX v1.7 mutual exclusion rules.
+   - **Phase 10**: `output/cyclonedx_serializer.js` formats the CBOM component tree.
+   - **Phase 11**: `output/correlation.js` (`correlateCbomWithSbom`) builds cross-layer summaries.
+10. **`backend/src/modules/ingest/repoIngest.js` (`cleanup`)**: Recursively deletes the cloned directory.
+11. **Express Response**: Returns combined `{ sbom, cbom, correlation }` to the frontend client.
+
+---
+
+## 3. SBOM Generation Pipeline
+
+### Lockfile Parsing & Ecosystem Normalization
+- Handled in [`backend/src/modules/parse/npmLockParser.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/parse/npmLockParser.js).
+- Supports npm `lockfileVersion: 2` and `3` (nested `packages` structure).
+- Extracts standard Package URLs (`pkg:npm/<scope>%2F<name>@<version>`).
+- Differentiates direct root dependencies (`lockData.packages[''].dependencies`) from transitive nested dependencies.
+
+### Vulnerability Enrichment (OSV.dev)
+- Handled in [`backend/src/modules/enrich/osv.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/enrich/osv.js).
+- Batches PURLs into payloads of 500 components per POST request to `https://api.osv.dev/v1/querybatch`.
+- Collects CVE, GHSA, severity scores, and affected version ranges.
+
+### Anomaly Detectors
+- **Typosquatting** ([`backend/src/modules/anomaly/typosquat.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/anomaly/typosquat.js)): Compares dependency names against a top-500 popular package dictionary. Calculates Levenshtein distance, flagging names with distance $1$ or $2$ (excluding scoped subpackages).
+- **Staleness / Freshness** ([`backend/src/modules/anomaly/freshness.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/anomaly/freshness.js)): Checks release timestamps from registry metadata; flags components whose last release was $>730$ days (2 years) ago.
+- **Version Pinning** ([`backend/src/modules/anomaly/versionPinning.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/anomaly/versionPinning.js)): Identifies floating version specifiers (`*`, `latest`, `^`, `~`, `>`).
+- **Install Scripts** ([`backend/src/modules/anomaly/installScript.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/src/modules/anomaly/installScript.js)): Flags packages configuring execution hooks (`preinstall`, `install`, `postinstall`).
+
+---
+
+## 4. CBOM Detection & Risk Analysis Pipeline
+
+### 4.1 AST-Based Crypto API Detection (`astExtract.js`)
+Uses `@babel/parser` and `@babel/traverse` to scan all JavaScript / TypeScript files:
+- **Node.js `crypto` Module**:
+  - `crypto.createHash('md5' | 'sha1' | 'sha256' | ...)`
+  - `crypto.createCipheriv('aes-256-gcm' | 'des' | ...)` / `createCipher`
+  - `crypto.createSign('RSA-SHA256' | ...)` / `createVerify`
+  - `crypto.createHmac('sha256', secret)`
+  - `crypto.pbkdf2` / `crypto.pbkdf2Sync` / `crypto.scrypt`
+  - `crypto.randomBytes` / `crypto.randomUUID` $\rightarrow$ `CSPRNG` (`drbg`)
+  - `crypto.generateKeyPairSync('rsa' | 'ec')` $\rightarrow$ In-memory keypair generation
+- **Password Hashing**:
+  - `bcrypt.hash` / `bcrypt.hashSync` $\rightarrow$ Primitive: `kdf`, Algorithm: `bcrypt`
+  - `bcrypt.compare` / `bcrypt.compareSync` $\rightarrow$ Primitive: `null` (verification, not derivation), Quantum Risk: `NONE`
+  - `bcrypt.genSalt` / `bcrypt.genSaltSync` $\rightarrow$ Asset Type: `related-crypto-material`, Material Type: `salt`
+- **JWT / JWA / JOSE**:
+  - `jwt.sign(payload, secret, { algorithm: 'HS256' | 'RS256' | 'none' })`
+  - `jwt.verify(token, secret, ...)`
+  - Flags weak configurations (e.g. algorithm `none` or weak HMAC secrets).
+- **CryptoJS**:
+  - `CryptoJS.AES.encrypt`, `CryptoJS.DES.encrypt`, `CryptoJS.TripleDES.encrypt`, `CryptoJS.RC4.encrypt`, `CryptoJS.MD5`, `CryptoJS.SHA256`, `CryptoJS.PBKDF2`.
+- **Comment vs. Live Context Tagging**: AST visitors check whether nodes are contained inside comment blocks or unreachable dead code (`sourceContext: 'live' | 'comment'`). Comment findings receive a confidence discount.
+
+### 4.2 Static File Scanning (`keysCerts.js`)
+- Recursively walks target directories inspecting files for PEM headers:
+  - `-----BEGIN CERTIFICATE-----` $\rightarrow$ Asset Type: `certificate`, Subject, Issuer, Expiry (`notValidAfter`), Algorithm Ref.
+  - `-----BEGIN RSA PRIVATE KEY-----` / `-----BEGIN EC PRIVATE KEY-----` / `-----BEGIN PRIVATE KEY-----` $\rightarrow$ Asset Type: `related-crypto-material`, Type: `private-key`.
+
+### 4.3 Package & SCA Attribution (`sbomAdapter.js`)
+- Compares dependency tree components against [`crypto_library_map.json`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/context/crypto_library_map.json) (73 curated crypto libraries including `bcrypt`, `jsonwebtoken`, `@noble/hashes`, `crypto-js`, `node-forge`, `tweetnacl`, `elliptic`, etc.).
+- Evaluates exact catalog matches vs. keyword/stem fallbacks.
+
+### 4.4 Schema Separation Rules (CycloneDX v1.7)
+Enforced in [`backend/cbom/validator/validate.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/validator/validate.js):
+- **`algorithm`**: Must contain `algorithmProperties` (`primitive`, `algorithmFamily`, `parameterSetIdentifier`). Must **NOT** contain `materialType` or `certificateProperties`.
+- **`related-crypto-material`**: Must contain `relatedCryptoMaterialProperties` (`type`: `private-key` | `public-key` | `secret-key` | `salt` | `token` | `iv` | `seed`). Must **NOT** contain `primitive`.
+- **`certificate`**: Must contain `certificateProperties` (`subjectName`, `issuerName`, `notValidAfter`, `signatureAlgorithmRef`). Must **NOT** contain `primitive` or `materialType`.
+
+### 4.5 Quantum-Risk Scoring Model (NIST Levels)
+Scored in [`backend/cbom/analysis/quantumRisk.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/analysis/quantumRisk.js):
+
+| Algorithm Category | Algorithm Family / Primitives | NIST Quantum Level | Severity Label | Justification |
+| :--- | :--- | :---: | :---: | :--- |
+| **Broken Asymmetric** | RSA, ECDSA, ECDH, DSA, EdDSA | **Level 0** | `CRITICAL` | Vulnerable to Shor's algorithm on Cryptanalytically Relevant Quantum Computers (CRQCs). |
+| **Broken Classical** | MD5, SHA-1, DES, 3DES, RC4, algorithm `none` | **Level 0** | `HIGH` | Classically broken (collision/preimage attacks); urgent migration priority. |
+| **Grover-Affected Symmetric** | AES-128, ChaCha20, SHA-256, HMAC, SHA-512 | **Level 1–2** | `LOW` / `MEDIUM` | Quantum Grover speedup halves effective security ($2^{128} \rightarrow 2^{64}$); AES-256/SHA-384 provide 128-bit quantum security. |
+| **Post-Quantum Crypto** | ML-KEM, ML-DSA, SLH-DSA, Kyber, Dilithium | **Level 3–5** | `NONE` | Quantum-resistant lattice/stateful hash signatures. |
+| **Non-Quantum Relevant** | CSPRNG (`drbg`), salts, comparison ops | N/A | `NONE` | Randomness generators and helpers carry no mathematical trapdoor; quantum risk is not applicable. |
+
+### 4.6 Secret Exposure Risk Scoring (Independent Dimension)
+Distinct from quantum vulnerability:
+- **`exposureRisk: CRITICAL`**: Assigned to `related-crypto-material` findings of type `private-key` found in committed repository files on disk (e.g. `server.key`, `id_rsa`).
+- **`exposureRisk: NONE`**: Assigned to in-memory runtime key generation (e.g. `crypto.generateKeyPairSync('ec')`) because ephemeral keys in RAM are not repository secret leaks.
+
+### 4.7 Dynamic Confidence Scoring Engine
+Computed in [`backend/cbom/analysis/confidence.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/backend/cbom/analysis/confidence.js) (no flat constants):
+- **AST Code Findings**: Direct string literal algorithm (`0.95` raw) vs. variable/inferred parameter (`0.75` raw). Scaled by context cap: Production (`1.0`), Test (`0.4`), Vendor (`0.7`).
+- **File Findings**: Full ASN.1 / X.509 metadata parse (`0.90` raw) vs. plain header regex (`0.65` raw).
+- **SCA Package Findings**:
+  - Exact catalog match (`0.70` base) vs. stem/fuzzy match (`0.50` base).
+  - Direct root dependency (`+0.15`) vs. transitive (`-0.10`).
+  - Active AST code corroboration in repo (`+0.20`).
+  - Dev-dependency (`-0.10`).
+
+---
+
+## 5. In-Process Embedder & Offline LLM Verification
+
+### How Embedder & Ollama Load and Run
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Node.js Process (In-Memory)                     │
+│                                                                        │
+│  astExtract / constants                                                │
+│         │                                                              │
+│         ▼                                                              │
+│  shouldVerify(evidence) ──► (if no DIRECT evidence)                    │
+│         │                                                              │
+│         ▼                                                              │
+│  extractEnclosingSpan() ──► Babel AST function slice                   │
+│         │                                                              │
+│         ▼                                                              │
+│  @xenova/transformers ────► Xenova/all-MiniLM-L6-v2 (ONNX in-process)  │
+│         │                   (auto-cached in ~/.cache/transformers)     │
+│         ▼                                                              │
+│  vectorSearch.js ─────────► Cosine similarity against corpus/*.jsonl   │
+└─────────┬──────────────────────────────────────────────────────────────┘
+          │ HTTP JSON POST (offline localhost only)
+          ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Ollama Daemon (localhost:11434)                 │
+│                                                                        │
+│  qwen2.5-coder:1.5b (or qwen2.5-coder:7b)                              │
+│  Returns: { algorithmFamily, primitive, confidence, reasoning }        │
+└─────────┬──────────────────────────────────────────────────────────────┘
+          │ HTTP Response
+          ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Node.js Process (In-Memory)                     │
+│                                                                        │
+│  validateLlmResponse() ───► Rejects primitives in family field         │
+│         │                   Canonicalizes to CycloneDX registry enum   │
+│         ▼                                                              │
+│  aggregate() ─────────────► Merges with static evidence                │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **In-Process Embedder (`@xenova/transformers`)**:
+   - Runs **entirely in-process** inside the Node.js backend using ONNX Runtime.
+   - Model: `Xenova/all-MiniLM-L6-v2` (384-dimensional dense embeddings).
+   - Automatically downloads the ONNX weight files (~90MB) on first run and caches them locally in `~/.cache/transformers`. No separate server or Python process is required.
+2. **Offline LLM Verification (`llm_agent.js`)**:
+   - Model: `qwen2.5-coder:1.5b` (default for lightweight local development) or `qwen2.5-coder:7b`.
+   - Endpoint: `http://localhost:11434/api/chat`.
+   - Setup Requirement: Ollama is an external local daemon. The user must install Ollama and run `ollama pull qwen2.5-coder:1.5b`.
+   - Environment Variables:
+     - `OFFLINE_LLM_URL`: Custom endpoint URL (default: `http://localhost:11434/api/chat`).
+     - `OFFLINE_LLM_MODEL`: Target model tag (default: `qwen2.5-coder:1.5b`).
+3. **Gating Rule (`shouldVerify`)**:
+   - Only triggers on findings that **lack** `EvidenceClass.DIRECT` (e.g. constant byte matches or heuristic code sites).
+   - High-confidence AST detections and PEM certificate matches bypass the LLM entirely.
+4. **Graceful Fallback**:
+   - If Ollama is offline or unreachable, `llm_agent.js` logs a warning and returns `null`.
+   - The scan completes normally without failing, preserving all deterministic static and SCA findings.
+5. **Strict Response Validation (`validateLlmResponse`)**:
+   - Checks `algorithmFamily` against `registry_snapshot.json`.
+   - Rejects responses where the LLM places a primitive type (e.g. `"stream-cipher"`) into the `algorithmFamily` field.
+   - Coerces invalid primitives (e.g. `"xor"`) to `null`.
+
+---
+
+## 6. Frontend Data Contract & Mapping
+
+Handled in [`frontend/src/utils/cbomTransform.js`](file:///Users/althea/Developer/Projects/sih260077_SBOM/frontend/src/utils/cbomTransform.js):
+
+### Categorical Confidence Bucketing
+
+$$\text{Confidence Category} = \begin{cases} \text{"very-high"} & \text{if } \text{confidence} \ge 0.85 \\ \text{"high"} & \text{if } 0.60 \le \text{confidence} < 0.85 \\ \text{"medium"} & \text{if } 0.30 \le \text{confidence} < 0.60 \\ \text{"low"} & \text{if } \text{confidence} < 0.30 \end{cases}$$
+
+- **"Needs manual review" Stat Card**: Aggregates all findings with `confidence < 0.30` (`low`).
+
+### Quantum Security Level Mapping (NIST Levels 0–5)
+- **Level 0**: Quantum-vulnerable asymmetric algorithms (RSA, EC, DSA) and classically broken primitives (MD5, SHA-1, DES).
+- **Level 1**: Grover-affected 128-bit symmetric ciphers (AES-128, ChaCha20).
+- **Level 2**: Grover-affected 256-bit collision-resistant hashes (SHA-256, SHA3-256).
+- **Level 3**: 128-bit Post-Quantum primitives (ML-KEM-512, ML-DSA-44) and AES-192.
+- **Level 5**: 256-bit Post-Quantum primitives (ML-KEM-1024, ML-DSA-87) and AES-256.
+
+### Certificate Expiration Window
+- Flags certificates expiring within **90 days** ($\text{notValidAfter} \le \text{now} + 90\text{ days}$).
+
+---
+
+## 7. System Data Flow Architecture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Security Analyst / UI
+    participant Route as Express /api/scan
+    participant SbomEng as SBOM Pipeline
+    participant CbomAst as AST & File Scanner
+    participant Vector as In-Process Embedder
+    participant Ollama as Local Ollama LLM
+    participant Engine as Aggregator & Scorer
+    participant UI as React Dashboard
+
+    User->>Route: POST /api/scan { githubUrl }
+    Route->>SbomEng: cloneRepo() & parseLockfile()
+    SbomEng->>SbomEng: Query OSV + npm Cache + Anomalies
+    SbomEng->>Route: CycloneDX SBOM
+    Route->>CbomAst: Run AST, PEM, Constants & SCA detection
+    CbomAst->>Route: Raw CryptoFindings[]
+    
+    opt Gated Verification (Supporting Findings Only)
+        Route->>Vector: extractEnclosingSpan() & embed()
+        Vector->>Route: Corpus Candidates
+        Route->>Ollama: POST /api/chat (qwen2.5-coder)
+        Ollama-->>Route: JSON { algorithmFamily, primitive }
+        Route->>Route: validateLlmResponse()
+    end
+
+    Route->>Engine: aggregate() + scoreFindings() + classifyFindings()
+    Engine->>Engine: validateFindings() (CycloneDX rules)
+    Engine->>Engine: correlateCbomWithSbom()
+    Route-->>User: 200 OK { sbom, cbom, correlation }
+    User->>UI: cbomTransform.js normalizes and renders dashboard
+```
+
+---
+
+## 8. Known Limitations
+
+1. **Language Scope**: AST crypto detection is implemented for **JavaScript and TypeScript** (Node.js and browser JS). Python, Go, Java, and C/C++ crypto calls are not statically extracted.
+2. **Curated Library Map**: Package-level crypto capability attribution is bounded by the 73 curated package families in `crypto_library_map.json`. Unlisted third-party wrapper packages fall back to keyword matching.
+3. **Threshold Calibration**: Confidence thresholds ($0.85$, $0.60$, $0.30$) and certificate expiry windows ($90$ days) are chosen heuristic thresholds tailored for audit visibility, not empirical ML benchmarks.
+4. **LLM Verification Frequency**: Because AST detection and PEM parsing directly classify ground-truth crypto APIs with `DIRECT` evidence, the LLM verification gate triggers only on ambiguous constant matches or custom wrappers.
+
+---
+
+## 9. Installation & Run Guide
+
+### 9.1 Prerequisites
+- **Node.js**: v18.0.0 or higher
+- **npm**: v9.0.0 or higher
+- **git**: Available on your system `PATH`
+- **Ollama** (Optional, for Phase 6 LLM verification): [ollama.com](https://ollama.com)
+
+---
+
+### 9.2 Clone & Install Dependencies
 
 ```bash
-git clone <this-repo-url>
-cd sih260077_SBOM/backend
+# Clone the repository
+git clone https://github.com/aresoasis02/sih260077.git
+cd sih260077_SBOM
+
+# Install Backend Dependencies
+cd backend
+npm install
+
+# Install Frontend Dependencies
+cd ../frontend
 npm install
 ```
-Same on every OS. No `.env` file or API keys required — everything the tool talks to (GitHub, npm registry, OSV.dev) is public.
 
 ---
 
-## Running the server
+### 9.3 Setup Ollama (Optional for Local LLM Verification)
 
-**macOS / Linux:**
+1. Start the Ollama background daemon:
+   ```bash
+   ollama serve
+   ```
+2. Pull the target coding model in a separate terminal:
+   ```bash
+   ollama pull qwen2.5-coder:1.5b
+   # Or for larger environments:
+   # ollama pull qwen2.5-coder:7b
+   ```
+
+---
+
+### 9.4 Start the Backend Server
+
 ```bash
+cd backend
+
+# Standard start on port 5050 (recommended to avoid macOS AirPlay conflict on 5000)
 PORT=5050 npm run dev
 ```
 
-**Windows (PowerShell):**
-```powershell
-$env:PORT=5050; npm run dev
-```
-
-We use `5050` instead of the default `5000` because **on macOS, port 5000 is often already held by AirPlay Receiver**, causing a confusing `EADDRINUSE` error. `5050` sidesteps that everywhere, so it's just the recommended default rather than something every OS specifically needs.
-
-You should see:
-```
-SBOM backend running on :5050
-```
-
-If a previous run is stuck holding the port:
-```bash
-# macOS / Linux
-lsof -ti :5050 | xargs kill -9
-```
-```powershell
-# Windows (PowerShell) — find the process, then kill it by PID
-netstat -ano | findstr :5050
-taskkill /PID <the_pid_from_above> /F
-```
+*Optional Environment Variables:*
+- `PORT=5050`
+- `OFFLINE_LLM_URL=http://localhost:11434/api/chat`
+- `OFFLINE_LLM_MODEL=qwen2.5-coder:1.5b`
 
 ---
 
-## Running a scan
+### 9.5 Start the Frontend Client
 
-**macOS / Linux:**
+```bash
+cd frontend
+npm run dev
+```
+Open your browser to `http://localhost:5173`.
+
+---
+
+### 9.6 Run an End-to-End Scan via CLI (cURL)
+
 ```bash
 curl -X POST http://localhost:5050/api/scan \
   -H "Content-Type: application/json" \
-  -d '{"githubUrl":"https://github.com/OWNER/REPO"}' \
-  > /tmp/scan-result.json
+  -d '{"githubUrl":"https://github.com/sahat/hackathon-starter"}' \
+  -o scan-output.json
 
-python3 -m json.tool /tmp/scan-result.json > /tmp/scan-pretty.json
-```
-
-**Windows (PowerShell)** — the backslash line-continuation above doesn't work in PowerShell, and quoting JSON needs escaped double-quotes, so it's easiest as one line:
-```powershell
-curl -X POST http://localhost:5050/api/scan -H "Content-Type: application/json" -d '{\"githubUrl\":\"https://github.com/OWNER/REPO\"}' -o scan-result.json
-
-py -m json.tool scan-result.json > scan-pretty.json
-```
-(If `py` doesn't work, try `python` instead — depends on how Python was installed.)
-
-**A scan can take anywhere from ~15 seconds to over a minute** for large repos — this is normal, it's checking every dependency against the npm registry and a vulnerability database, not a hang. Wait for the command to finish before opening the file.
-
-To view the result:
-```bash
-# macOS
-open /tmp/scan-pretty.json
-```
-```bash
-# Linux
-xdg-open /tmp/scan-pretty.json
-```
-```powershell
-# Windows (PowerShell)
-notepad scan-pretty.json
-# or: start scan-pretty.json    (opens in your default JSON/text app)
-```
-Or, on any OS, open it in VS Code: `code scan-pretty.json` (if you have the `code` CLI installed).
-
----
-
-## Running tests
-
-```bash
-npm test                          # run everything, same command on every OS
-npx jest test/<name>.test.js      # run one suite, e.g. npx jest test/typosquat.test.js
+# Format output for review
+node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('scan-output.json')), null, 2))"
 ```
 
 ---
 
-## How it works, in plain terms
+### 9.7 Run Automated Tests
 
-You give it a GitHub URL. Here's what happens, step by step:
+```bash
+cd backend
 
-1. **Clone the repo** — a shallow, temporary clone (deleted automatically when the scan finishes).
-2. **Read `package-lock.json`** — this file already lists every dependency your project uses, including the indirect ones you never installed by hand. We flatten that into a simple list: name, version, and a few flags (is it a dev-only dependency? does it run a script during install?).
-3. **Check for known vulnerabilities** — every package + version gets checked against [OSV.dev](https://osv.dev), a public vulnerability database. Anything with a known CVE/advisory gets flagged.
-4. **Run anomaly checks on each package:**
-   - **Typosquat check** — is this package's name suspiciously close (1-2 character edits) to a well-known package, but *not* actually that package? (e.g. a fake `expres` pretending to be `express`.) This is a common trick used to trick people into installing malware.
-   - **Version pinning check** — is this dependency declared with a dangerously loose version range (like `*` or `latest`), meaning any future update — including a malicious one — gets installed automatically without anyone noticing?
-   - **Install-script check** — does this package run a script automatically the moment it's installed? That's normal for some legitimate packages (native bindings, etc.), but it's also exactly how several real npm supply-chain attacks have worked — malicious code running before anyone even reads it.
-   - **Freshness check** — is this a package that was published very recently *and* barely anyone downloads it? New + unpopular is a common profile for a malicious package trying to sneak in.
-   - **License check** — what license does this package use? Permissive licenses (MIT, Apache, etc.) are safe for most use. "Copyleft" licenses (GPL, LGPL) can legally require you to open-source your own code if you use them — worth knowing about before you ship.
-   - **Deprecated check** — has the package's own maintainer marked it deprecated on npm? If so, we surface their actual reason.
-5. **Build the report** — everything above gets assembled into one JSON file in the CycloneDX format (an industry-standard SBOM format), plus a `riskSummary` section at the top with quick counts (how many critical/high/medium/low findings) so you don't have to read through every single dependency to get the gist.
+# Run the complete test suite (10 test suites, 59 unit tests)
+npm test
 
----
-
-## Known limitations right now
-
-- **Scans are synchronous** — one request, blocking, until the whole thing finishes. No progress bar, no partial results.
-- **Freshness/license checks hit the public npm registry hundreds of times per scan** — on a large dependency tree this can occasionally get rate-limited (HTTP 429). The tool retries automatically, but a few checks may still come back inconclusive on very large repos.
-- **Typosquat detection only compares against ~9,500 well-known packages** ([`npm-high-impact`](https://www.npmjs.com/package/npm-high-impact)) — very obscure legitimate packages could theoretically still get a false positive, though this is rare in practice.
-- **Requires an npm lockfile version 3** (generated by npm 7+). Older lockfiles will still scan, but install-script detection won't have data to work with.
+# Run CBOM CLI pipeline unit tests specifically
+npm test -- --testPathPattern="cbom/cli/main.test.js"
+```
