@@ -74,8 +74,18 @@ function bucketBySize(size, table) {
 function nistQuantumLevelFor(finding) {
   const family = (finding.algorithmFamily || finding.name || '').toUpperCase();
 
+  // Algorithm finding with no cryptographic primitive (e.g. comparison, utility)
+  if (finding.assetType === AssetType.ALGORITHM && !finding.primitive) {
+    return NistQuantumLevel.L5_PQC_NATIVE;
+  }
+
   // CSPRNG and salts are not algorithmically quantum-vulnerable
-  if (finding.primitive === Primitive.DRBG || finding.materialType === MaterialType.SALT || family === 'CSPRNG') {
+  if (
+    finding.primitive === Primitive.DRBG ||
+    finding.materialType === MaterialType.SALT ||
+    finding.materialType === 'salt' ||
+    family === 'CSPRNG'
+  ) {
     return NistQuantumLevel.L5_PQC_NATIVE;
   }
 
@@ -92,7 +102,7 @@ function nistQuantumLevelFor(finding) {
   if (CLASSICALLY_BROKEN_FAMILIES.has(family)) return NistQuantumLevel.L0_BROKEN;
 
   // Modern symmetric-based password KDFs (bcrypt, PBKDF2 with SHA-256/512, scrypt, Argon2)
-  if (finding.primitive === Primitive.KDF || /^(BCRYPT|PBKDF2|SCRYPT|ARGON2)$/i.test(family)) {
+  if (finding.primitive === Primitive.KDF || (finding.primitive && /^(BCRYPT|PBKDF2|SCRYPT|ARGON2)$/i.test(family))) {
     if (finding.parameterSet && /md5|sha1/i.test(finding.parameterSet)) {
       return NistQuantumLevel.L1; // weak underlying hash
     }
@@ -133,9 +143,9 @@ function inferDataSensitivity(finding) {
   return 'medium';
 }
 
-/** Direct port of classify_risk() with explicit non-quantum handling for CSPRNGs/salts */
-function classifyRisk(nistQuantumLevel, dataSensitivity, isEntropyOrSalt = false) {
-  if (isEntropyOrSalt) return 'NONE';
+/** Direct port of classify_risk() with explicit non-quantum handling for non-primitives / CSPRNGs / salts */
+function classifyRisk(nistQuantumLevel, dataSensitivity, isNonApplicable = false) {
+  if (isNonApplicable) return 'NONE';
   if (nistQuantumLevel === NistQuantumLevel.L0_BROKEN && dataSensitivity === 'high') return 'CRITICAL';
   if (nistQuantumLevel === NistQuantumLevel.L0_BROKEN) return 'HIGH';
   if (nistQuantumLevel <= NistQuantumLevel.L2) return 'MEDIUM';
@@ -193,9 +203,14 @@ function classifyExposureRisk(finding) {
 function classifyFindings(findings) {
   for (const f of findings) {
     const family = (f.algorithmFamily || f.name || '').toUpperCase();
-    const isEntropyOrSalt = f.primitive === Primitive.DRBG || f.materialType === MaterialType.SALT || family === 'CSPRNG';
+    const isNonApplicable =
+      (f.assetType === AssetType.ALGORITHM && !f.primitive) ||
+      f.primitive === Primitive.DRBG ||
+      f.materialType === MaterialType.SALT ||
+      f.materialType === 'salt' ||
+      family === 'CSPRNG';
     f.nistQuantumLevel = nistQuantumLevelFor(f);
-    f.quantumRisk = classifyRisk(f.nistQuantumLevel, inferDataSensitivity(f), isEntropyOrSalt);
+    f.quantumRisk = classifyRisk(f.nistQuantumLevel, inferDataSensitivity(f), isNonApplicable);
     f.exposureRisk = classifyExposureRisk(f);
   }
   return findings;

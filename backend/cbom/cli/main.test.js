@@ -456,4 +456,59 @@ describe('CBOM Correctness & Schema Verification', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('resolves quantumRisk as NONE for null-primitive algorithm findings and salt material', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const compareFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'bcrypt',
+      algorithmFamily: 'bcrypt',
+      primitive: null, // compare operation has no primitive
+      filePath: 'app/data/user-dao.js',
+      line: 65,
+    });
+
+    const saltFinding = new CryptoFinding({
+      assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+      name: 'bcrypt-salt',
+      materialType: MaterialType.SALT,
+      primitive: null,
+      filePath: 'app/data/user-dao.js',
+      line: 29,
+    });
+
+    classifyFindings([compareFinding, saltFinding]);
+
+    expect(compareFinding.quantumRisk).toBe('NONE');
+    expect(saltFinding.quantumRisk).toBe('NONE');
+  });
+
+  test('scores real cryptographic primitives correctly per per-algorithm rules', () => {
+    const { classifyFindings } = require('../analysis/quantumRisk');
+
+    const hashFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'bcrypt',
+      algorithmFamily: 'bcrypt',
+      primitive: Primitive.KDF,
+      filePath: 'app/data/user-dao.js',
+      line: 29,
+    });
+
+    const aesFinding = new CryptoFinding({
+      assetType: AssetType.ALGORITHM,
+      name: 'AES-256',
+      algorithmFamily: 'AES',
+      primitive: Primitive.BLOCK_CIPHER,
+      parameterSet: '256',
+      filePath: 'src/crypto.js',
+      line: 10,
+    });
+
+    classifyFindings([hashFinding, aesFinding]);
+
+    expect(hashFinding.quantumRisk).toBe('LOW');
+    expect(aesFinding.quantumRisk).toBe('LOW');
+  });
 });

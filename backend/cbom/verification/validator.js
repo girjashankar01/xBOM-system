@@ -55,7 +55,7 @@ function checkAlgorithmFamily(finding, issues) {
   if (!REGISTRY_FAMILY_SET.has(family)) {
     issues.push(new ValidationIssue({
       level: 'warning', field: 'algorithmFamily', findingId: finding.findingId,
-      message: `algorithmFamily="${family}" isn't in the vendored registry snapshot (dated ${registry.registryLastUpdated}) — still emitted as free text, but won't validate against strict CBOM consumers that enforce the enum`,
+      message: `algorithmFamily="${family}" is not catalogued in CycloneDX v1.7's vendored algorithm registry snapshot (dated ${registry.registryLastUpdated}) — emitted as valid free text per CycloneDX specification (benign for generic families like CSPRNG or library wrappers), but note that strict CBOM consumers enforcing the closed enum will see free text`,
     }));
   }
 }
