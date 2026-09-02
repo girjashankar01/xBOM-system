@@ -80,7 +80,7 @@ async function runVerification(findings, { corpusDir }) {
  * wrapper's job, so tests can call this directly.
  */
 async function runPipeline(targetDir, options = {}) {
-  const { corpusDir = null, sbomPath = null, skipLlm = false } = options;
+  const { corpusDir = null, sbomPath = null, sbomJson = null, sbom = null, sbomAdapter: passedAdapter = null, skipLlm = false } = options;
 
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`targetDir "${targetDir}" is not a directory`);
@@ -110,9 +110,16 @@ async function runPipeline(targetDir, options = {}) {
   for (const w of validation.warnings) console.warn(`[validator] warning: ${w.message} (${w.findingId})`);
   for (const e of validation.errors) console.error(`[validator] error: ${e.message} (${e.findingId})`);
 
-  let sbomAdapter = null;
+  let sbomAdapter = passedAdapter;
   let correlation = null;
-  if (sbomPath) {
+  const inMemorySbom = sbomJson || sbom;
+  if (!sbomAdapter && inMemorySbom) {
+    try {
+      sbomAdapter = SbomAdapter.fromCycloneDxJson(inMemorySbom);
+    } catch (err) {
+      console.warn(`[main] could not load in-memory SBOM — skipping correlation. ${err.message}`);
+    }
+  } else if (!sbomAdapter && sbomPath) {
     try { sbomAdapter = SbomAdapter.fromFile(sbomPath); } catch (err) {
       console.warn(`[main] could not load SBOM at ${sbomPath} — skipping correlation. ${err.message}`);
     }
