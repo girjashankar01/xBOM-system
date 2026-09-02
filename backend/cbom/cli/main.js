@@ -21,6 +21,7 @@
 // read a demo run's finding count as representative until that's in.
 
 const fs = require('node:fs');
+const path = require('node:path');
 
 const { classifyFindings } = require('../context_classifier/classify');
 const { extractEnclosingSpan } = require('../retrieval/embedder');
@@ -35,43 +36,107 @@ const { correlateFindings, findCompoundingRisk, buildCombinedRiskSummary } = req
 const { SbomAdapter } = require('../context/sbomAdapter');
 const { scan: scanKeysCerts } = require('../scanner/keysCerts');
 const { scan: scanConstants } = require('../scanner/constants');
-
 const { scan: scanAstExtract } = require('../scanner/astExtract');
+const { scanCandidates } = require('../scanner/candidateExtractor');
+const { EvidenceClass } = require('../core/models');
 
+const DEFAULT_MAX_LLM_CANDIDATES = 50;
+const DEFAULT_LLM_CONCURRENCY = 4;
 
-async function runVerification(findings, { corpusDir }) {
-  if (!corpusDir) {
-    console.warn('[main] no corpusDir provided — skipping Phase 6 LLM verification.');
-    return [];
-  }
-  let retriever;
-  try {
-    retriever = await new CandidateRetriever(corpusDir).init();
-  } catch (err) {
-    console.warn(`[main] retrieval corpus unavailable (${err.message}) — skipping Phase 6 LLM verification.`);
-    return [];
-  }
-
-  const llmFindings = [];
+async function runVerification(findings, {
+  corpusDir,
+  targetDir,
+  maxLlmCandidates = DEFAULT_MAX_LLM_CANDIDATES,
+  concurrency = DEFAULT_LLM_CONCURRENCY,
+} = {}) {
+  const eligible = [];
   for (const finding of findings) {
     if (!shouldVerify(finding.evidenceClasses())) continue; // already has DIRECT evidence
     if (!finding.filePath || !finding.line) continue;
-
-    let span;
-    try { span = extractEnclosingSpan(finding.filePath, finding.line); } catch { continue; }
-
-    let candidates = [];
-    try { candidates = await retriever.candidates(span.text); } catch (err) {
-      console.warn(`[main] candidate retrieval failed for ${finding.filePath}:${finding.line} — ${err.message}`);
-    }
-
-    const verified = await verifySpan({
-      filePath: finding.filePath, line: finding.line, codeText: span.text,
-      candidates, contextCategory: finding.contextCategory,
-    });
-    if (verified) llmFindings.push(verified);
+    eligible.push(finding);
   }
-  return llmFindings;
+
+  const totalEligible = eligible.length;
+  let candidatesToProcess = eligible;
+  let skippedCount = 0;
+
+  if (totalEligible > maxLlmCandidates) {
+    skippedCount = totalEligible - maxLlmCandidates;
+    console.warn(`[main] LLM candidate count (${totalEligible}) exceeded safety cap (${maxLlmCandidates}) — truncating and skipping ${skippedCount} candidates.`);
+    candidatesToProcess = eligible.slice(0, maxLlmCandidates);
+  }
+
+  const stats = {
+    candidatesConsidered: totalEligible,
+    candidatesSkippedDueToLimit: skippedCount,
+    llmCallsAttempted: 0,
+    llmCallsSucceeded: 0,
+    noCryptoDetected: 0,
+    llmCallsFailed: 0,
+    wallClockMs: 0,
+    failureReasons: {
+      connection_error: 0,
+      timeout: 0,
+      invalid_json: 0,
+      schema_mismatch: 0,
+    },
+  };
+
+  let retriever = null;
+  if (corpusDir) {
+    const tRetriever = Date.now();
+    try {
+      retriever = await new CandidateRetriever(corpusDir).init();
+      console.log(`[main] CandidateRetriever (Phase 5) initialized in ${Date.now() - tRetriever} ms`);
+    } catch (err) {
+      console.warn(`[main] retrieval corpus unavailable (${err.message}) — proceeding with Phase 6 LLM verification without vector candidate hints.`);
+    }
+  }
+
+  const llmFindings = [];
+
+  // Parallel pool worker over candidatesToProcess with concurrency limit
+  let idx = 0;
+  const poolLimit = Math.max(1, Math.min(concurrency, candidatesToProcess.length || 1));
+  const workers = Array.from({ length: poolLimit }, async () => {
+    while (idx < candidatesToProcess.length) {
+      const currentIdx = idx++;
+      const finding = candidatesToProcess[currentIdx];
+
+      let span;
+      try {
+        const fullPath = targetDir ? path.resolve(targetDir, finding.filePath) : finding.filePath;
+        span = extractEnclosingSpan(fullPath, finding.line);
+      } catch {
+        continue;
+      }
+
+      let candidates = [];
+      if (retriever) {
+        try {
+          candidates = await retriever.candidates(span.text);
+        } catch (err) {
+          console.warn(`[main] candidate retrieval failed for ${finding.filePath}:${finding.line} — ${err.message}`);
+        }
+      }
+
+      const verified = await verifySpan({
+        filePath: finding.filePath,
+        line: finding.line,
+        codeText: span.text,
+        candidates,
+        contextCategory: finding.contextCategory,
+        stats,
+      });
+
+      if (verified) {
+        llmFindings.push(verified);
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return { llmFindings, stats };
 }
 
 /**
@@ -80,7 +145,19 @@ async function runVerification(findings, { corpusDir }) {
  * wrapper's job, so tests can call this directly.
  */
 async function runPipeline(targetDir, options = {}) {
-  const { corpusDir = null, sbomPath = null, sbomJson = null, sbom = null, sbomAdapter: passedAdapter = null, skipLlm = false } = options;
+  const totalStart = Date.now();
+  const phaseTimingsMs = {};
+
+  const {
+    corpusDir = null,
+    sbomPath = null,
+    sbomJson = null,
+    sbom = null,
+    sbomAdapter: passedAdapter = null,
+    skipLlm = false,
+    maxLlmCandidates = DEFAULT_MAX_LLM_CANDIDATES,
+    concurrency = DEFAULT_LLM_CONCURRENCY,
+  } = options;
 
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`targetDir "${targetDir}" is not a directory`);
@@ -89,6 +166,7 @@ async function runPipeline(targetDir, options = {}) {
   const defaultCorpusDir = require('node:path').join(__dirname, '../retrieval/corpus');
   const resolvedCorpusDir = corpusDir || (fs.existsSync(defaultCorpusDir) ? defaultCorpusDir : null);
 
+  const tSbom = Date.now();
   let sbomAdapter = passedAdapter;
   let correlation = null;
   const inMemorySbom = sbomJson || sbom;
@@ -103,32 +181,85 @@ async function runPipeline(targetDir, options = {}) {
       console.warn(`[main] could not load SBOM at ${sbomPath} — skipping correlation. ${err.message}`);
     }
   }
+  phaseTimingsMs.sbomSetup = Date.now() - tSbom;
 
-  // Phase 2: Semgrep/AST detector. Degrades gracefully when semgrep is not
-  // on PATH (e.g. dev environments without semgrep installed) — warns and
-  // returns [] so the rest of the pipeline still runs on Phase 2.5/3 findings.
+  // Phase 2: AST detector
+  const tAst = Date.now();
   let astFindings = [];
   try {
     astFindings = scanAstExtract(targetDir);
   } catch (err) {
     console.warn(`[main] scanner/astExtract.js (Phase 2) skipped — ${err.message}`);
   }
+  phaseTimingsMs.astExtract = Date.now() - tAst;
+
+  // Phase 2.5: Keys & Certs Scanner
+  const tKeys = Date.now();
+  const keysFindings = scanKeysCerts(targetDir);
+  phaseTimingsMs.keysCerts = Date.now() - tKeys;
+
+  // Phase 2.5: Constants Scanner
+  const tConst = Date.now();
+  const constFindings = scanConstants(targetDir);
+  phaseTimingsMs.constants = Date.now() - tConst;
 
   // Phase 1 / 3: SCA package-level crypto detection from SBOM
+  const tSca = Date.now();
   const scaFindings = sbomAdapter ? sbomAdapter.generateScaFindings({ astFindings }) : [];
+  phaseTimingsMs.sca = Date.now() - tSca;
 
-  const rawFindings = [
+  const staticFindings = [
     ...astFindings,
-    ...scanKeysCerts(targetDir),
-    ...scanConstants(targetDir),
+    ...keysFindings,
+    ...constFindings,
     ...scaFindings,
   ];
 
-  classifyFindings(rawFindings); // Phase 4, before verification so llm_agent gets real context
+  // Phase 2.9: Candidate Extractor
+  const tCand = Date.now();
+  const candidateFindings = scanCandidates(targetDir, staticFindings);
+  phaseTimingsMs.candidateExtractor = Date.now() - tCand;
+  console.log(`[main] scanCandidates extracted ${candidateFindings.length} candidate findings (static direct findings: ${staticFindings.length})`);
 
-  const llmFindings = skipLlm ? [] : await runVerification(rawFindings, { corpusDir: resolvedCorpusDir });
+  // Phase 4: Context Classification
+  const tClassify = Date.now();
+  const rawFindings = [...staticFindings];
+  classifyFindings(rawFindings);
+  phaseTimingsMs.contextClassification = Date.now() - tClassify;
+
+  // Phase 5 & 6: LLM Verification Tier
+  const tLlm = Date.now();
+  const candidatesToVerify = [...rawFindings, ...candidateFindings];
+  const defaultStats = {
+    candidatesConsidered: candidateFindings.length,
+    candidatesSkippedDueToLimit: 0,
+    llmCallsAttempted: 0,
+    llmCallsSucceeded: 0,
+    noCryptoDetected: 0,
+    llmCallsFailed: 0,
+    wallClockMs: 0,
+    failureReasons: {
+      connection_error: 0,
+      timeout: 0,
+      invalid_json: 0,
+      schema_mismatch: 0,
+    },
+  };
+
+  const { llmFindings, stats } = skipLlm
+    ? { llmFindings: [], stats: defaultStats }
+    : await runVerification(candidatesToVerify, {
+        corpusDir: resolvedCorpusDir,
+        targetDir,
+        maxLlmCandidates,
+        concurrency,
+      });
+
   classifyFindings(llmFindings);
+  phaseTimingsMs.llmVerificationTier = Date.now() - tLlm;
 
+  // Phase 7a, 7b, 8, 7: Aggregation, Scoring, Quantum Risk, Validator
+  const tAnalysis = Date.now();
   const merged = aggregate([...rawFindings, ...llmFindings]); // Phase 7a
   scoreFindings(merged);        // Phase 7b
   classifyQuantumRisk(merged);  // Phase 8
@@ -136,7 +267,10 @@ async function runPipeline(targetDir, options = {}) {
   const validation = validateFindings(merged); // Phase 7 (validator)
   for (const w of validation.warnings) console.warn(`[validator] warning: ${w.message} (${w.findingId})`);
   for (const e of validation.errors) console.error(`[validator] error: ${e.message} (${e.findingId})`);
+  phaseTimingsMs.analysisAndValidation = Date.now() - tAnalysis;
 
+  // Phase 10 & 11: Output Serialization & Correlation
+  const tOutput = Date.now();
   const cbom = buildCBOM(validation.clean, { sbomAdapter }); // Phase 10
 
   if (sbomAdapter) { // Phase 11
@@ -144,8 +278,44 @@ async function runPipeline(targetDir, options = {}) {
     const compounding = findCompoundingRisk(correlated);
     correlation = { correlated, compounding: compounding.compounding, summary: buildCombinedRiskSummary(validation.clean, correlated, compounding) };
   }
+  phaseTimingsMs.serializationAndCorrelation = Date.now() - tOutput;
+  phaseTimingsMs.totalPipelineMs = Date.now() - totalStart;
 
-  return { cbom, validation, correlation, findings: validation.clean };
+  console.log('\n[main] Pipeline Phase Timing Breakdown:');
+  console.log(`  - AST Extraction:               ${phaseTimingsMs.astExtract} ms`);
+  console.log(`  - Keys & Certs Scanner:         ${phaseTimingsMs.keysCerts} ms`);
+  console.log(`  - Constants Scanner:            ${phaseTimingsMs.constants} ms`);
+  console.log(`  - SCA / SBOM Setup:             ${phaseTimingsMs.sbomSetup + phaseTimingsMs.sca} ms`);
+  console.log(`  - Candidate Extractor:          ${phaseTimingsMs.candidateExtractor} ms`);
+  console.log(`  - Context Classification:       ${phaseTimingsMs.contextClassification} ms`);
+  console.log(`  - LLM Verification Tier:        ${phaseTimingsMs.llmVerificationTier} ms`);
+  console.log(`  - Analysis & Validation:        ${phaseTimingsMs.analysisAndValidation} ms`);
+  console.log(`  - CBOM Build & Serialization:   ${phaseTimingsMs.serializationAndCorrelation} ms`);
+  console.log(`  => Total Pipeline Duration:     ${phaseTimingsMs.totalPipelineMs} ms\n`);
+
+  const scanSummary = {
+    totalFindings: validation.clean.length,
+    directFindings: validation.clean.filter((f) => f.evidence.some((e) => e.evidenceClass === EvidenceClass.DIRECT)).length,
+    candidateFindings: candidateFindings.length,
+    llmVerification: {
+      candidatesConsidered: stats.candidatesConsidered,
+      candidatesSkippedDueToLimit: stats.candidatesSkippedDueToLimit || 0,
+      llmCallsAttempted: stats.llmCallsAttempted,
+      llmCallsSucceeded: stats.llmCallsSucceeded,
+      noCryptoDetected: stats.noCryptoDetected || 0,
+      llmCallsFailed: stats.llmCallsFailed,
+      failureReasons: stats.failureReasons || {
+        connection_error: 0,
+        timeout: 0,
+        invalid_json: 0,
+        schema_mismatch: 0,
+      },
+      wallClockMs: stats.wallClockMs,
+    },
+    phaseTimingsMs,
+  };
+
+  return { cbom, validation, correlation, findings: validation.clean, scanSummary };
 }
 
 // ---- CLI wrapper -----------------------------------------------------
@@ -185,6 +355,7 @@ async function main() {
   }
 
   console.log(`Findings: ${result.findings.length} clean, ${result.validation.errors.length} rejected, ${result.validation.warnings.length} warnings.`);
+  console.log(`[scanSummary] Total Findings: ${result.scanSummary.totalFindings} (Direct: ${result.scanSummary.directFindings}) | LLM Verification: ${result.scanSummary.llmVerification.candidatesConsidered} candidates considered, ${result.scanSummary.llmVerification.llmCallsAttempted} attempted, ${result.scanSummary.llmVerification.llmCallsSucceeded} succeeded, ${result.scanSummary.llmVerification.llmCallsFailed} failed (${result.scanSummary.llmVerification.wallClockMs}ms)`);
 }
 
 module.exports = { runPipeline, parseArgs };

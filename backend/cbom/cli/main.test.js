@@ -286,7 +286,7 @@ describe('CBOM Correctness & Schema Verification', () => {
         const token4 = jwt.sign({ sub: 'user4' }, '', { algorithm: 'none' });
         const verified = jwt.verify(token1, 'secret', { algorithms: ['RS256', 'none'] });
       `;
-      fs.writeFileSync(path.join(dir, 'jwt-test.js'), code);
+      fs.writeFileSync(path.join(dir, 'jwt-app.js'), code);
 
       const result = await runPipeline(dir, { skipLlm: true });
       expect(result.validation.errors).toHaveLength(0);
@@ -298,7 +298,7 @@ describe('CBOM Correctness & Schema Verification', () => {
       expect(families).toContain('none');
 
       // Check all have signature primitive
-      const jwtFindings = result.findings.filter(f => f.filePath.endsWith('jwt-test.js'));
+      const jwtFindings = result.findings.filter(f => f.filePath.endsWith('jwt-app.js'));
       expect(jwtFindings.every(f => f.primitive === 'signature')).toBe(true);
       expect(jwtFindings.every(f => f.sourceContext === 'live')).toBe(true);
 
@@ -326,12 +326,12 @@ describe('CBOM Correctness & Schema Verification', () => {
         const hmac = CryptoJS.HmacSHA256('msg', 'secret');
         const kdf = CryptoJS.PBKDF2('pass', 'salt');
       `;
-      fs.writeFileSync(path.join(dir, 'cryptojs-test.js'), code);
+      fs.writeFileSync(path.join(dir, 'cryptojs-app.js'), code);
 
       const result = await runPipeline(dir, { skipLlm: true });
       expect(result.validation.errors).toHaveLength(0);
 
-      const findings = result.findings.filter(f => f.filePath.endsWith('cryptojs-test.js'));
+      const findings = result.findings.filter(f => f.filePath.endsWith('cryptojs-app.js'));
       expect(findings.every(f => f.sourceContext === 'live')).toBe(true);
 
       const findFamily = fam => findings.find(f => f.algorithmFamily === fam);

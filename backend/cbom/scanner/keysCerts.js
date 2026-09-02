@@ -24,8 +24,18 @@ const PATTERNS = [
 ];
 
 const KEY_FILE_EXTENSIONS = new Set(['.pem', '.key', '.crt', '.cer', '.p12', '.pfx', '.jks', '.keystore']);
-const SKIP_DIR_NAMES = new Set(['node_modules', '.git']);
+const SKIP_DIR_NAMES = new Set([
+  'node_modules', '.git', 'dist', 'build', 'coverage', '.next',
+  '__tests__', '__mocks__', 'test', 'tests', 'fixtures',
+]);
 const SIZE_GUARD_BYTES = 20_000; // read-full-content threshold for extensionless/misnamed key files
+
+function isTestPath(filename, relPath = '') {
+  if (/[._-](test|spec)\.[a-zA-Z0-9]+$/i.test(filename)) return true;
+  const normalized = relPath.replace(/\\/g, '/');
+  if (/(?:^|\/)(?:__tests__|__mocks__|test|tests)\//i.test(normalized)) return true;
+  return false;
+}
 
 function fingerprint(buf) {
   // Never store or emit the actual key/cert bytes — hash only.
@@ -48,6 +58,8 @@ function* iterCandidateFiles(targetDir) {
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile()) {
+        const relPath = path.relative(targetDir, full).replace(/\\/g, '/');
+        if (isTestPath(entry.name, relPath)) continue;
         const ext = path.extname(full).toLowerCase();
         const size = fs.statSync(full).size;
         if (KEY_FILE_EXTENSIONS.has(ext) || size < SIZE_GUARD_BYTES) {

@@ -24,8 +24,13 @@ const { CryptoFinding, Evidence, EvidenceClass } = require('../core/models');
 const { Primitive } = require('../core/taxonomy');
 const registry = require('./registry_snapshot.json');
 
-const OFFLINE_LLM_URL = process.env.OFFLINE_LLM_URL || 'http://localhost:11434/api/chat';
-const OFFLINE_LLM_MODEL = process.env.OFFLINE_LLM_MODEL || 'qwen2.5-coder:1.5b';
+function getLlmUrl() {
+  return process.env.OFFLINE_LLM_URL || 'http://localhost:11434/api/chat';
+}
+
+function getLlmModel() {
+  return process.env.OFFLINE_LLM_MODEL || 'qwen2.5-coder:1.5b';
+}
 
 const VALID_PRIMITIVES = new Set(Object.values(Primitive));
 const VALID_FAMILIES_MAP = new Map(registry.algorithmFamilies.map((f) => [f.toLowerCase(), f]));
@@ -43,22 +48,93 @@ VALID_FAMILIES_MAP.set('sha-512', 'SHA-2');
 VALID_FAMILIES_MAP.set('sha1', 'SHA-1');
 VALID_FAMILIES_MAP.set('sha-1', 'SHA-1');
 
+function isNoCryptoResponse(parsed) {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const rawFam = (parsed.algorithmFamily || '').trim().toLowerCase();
+  const rawConf = Number(parsed.confidence);
+  const reasoning = (parsed.reasoning || '').toLowerCase();
+
+  // If confidence is 0 or null/empty algorithm family
+  if (!rawFam || rawFam === 'null' || rawFam === 'none' || rawFam === 'unknown' || rawFam === 'undefined' || rawConf === 0) {
+    const rawParam = (parsed.parameterSet || '').trim().toLowerCase();
+    const rawPrim = (parsed.primitive || '').trim().toLowerCase();
+    if (!VALID_FAMILIES_MAP.has(rawParam) && !VALID_FAMILIES_MAP.has(rawPrim)) {
+      return true;
+    }
+  }
+
+  if (reasoning.includes('no cryptographic') || reasoning.includes('no crypto') || reasoning.includes('does not use crypto') || reasoning.includes('does not use any crypto') || reasoning.includes('no cryptography')) {
+    if (rawConf === 0 || !rawFam || rawFam === 'null' || rawFam === 'none' || rawFam === 'unknown') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
- * Validates and canonicalizes raw LLM output against the CycloneDX algorithm registry
- * and primitive enums. Discards malformed guesses (e.g. primitives in the family field).
+ * Validates, repairs, and canonicalizes raw LLM output against the CycloneDX
+ * algorithm registry and primitive enums.
  */
 function validateLlmResponse(parsed) {
-  if (!parsed || typeof parsed !== 'object') return null;
-
-  const rawFamily = (parsed.algorithmFamily || '').trim();
-  if (!rawFamily || rawFamily === 'null' || rawFamily.toLowerCase() === 'unknown') {
+  if (!parsed || typeof parsed !== 'object') {
     return null;
   }
 
-  // Reject if the model mistakenly placed a primitive type in the algorithmFamily field
+  // Check if model explicitly and validly reported no crypto usage
+  if (isNoCryptoResponse(parsed)) {
+    return {
+      isCrypto: false,
+      algorithmFamily: null,
+      primitive: null,
+      parameterSet: null,
+      confidence: 0,
+      reasoning: parsed.reasoning || '',
+    };
+  }
+
+  let rawFamily = (parsed.algorithmFamily || '').trim();
+  let rawPrimitive = (parsed.primitive || '').trim().toLowerCase();
+  let rawParam = (parsed.parameterSet || '').trim();
+
+  // If family is empty or null, check if model placed the algorithm in parameterSet or primitive
+  if (!rawFamily || rawFamily === 'null' || rawFamily.toLowerCase() === 'unknown') {
+    if (rawParam && VALID_FAMILIES_MAP.has(rawParam.toLowerCase())) {
+      rawFamily = rawParam;
+    } else if (rawPrimitive && VALID_FAMILIES_MAP.has(rawPrimitive.toLowerCase())) {
+      rawFamily = rawPrimitive;
+      rawPrimitive = '';
+    } else {
+      return null;
+    }
+  }
+
+  // If model placed a primitive type in the family field, try to repair from parameterSet or primitive
   if (VALID_PRIMITIVES.has(rawFamily.toLowerCase())) {
-    console.warn(`[llm_agent] rejected malformed LLM response: algorithmFamily="${rawFamily}" is a primitive enum value, not an algorithm family`);
-    return null;
+    const primitiveHolder = rawFamily.toLowerCase();
+    let repairedFamily = null;
+
+    if (rawParam && VALID_FAMILIES_MAP.has(rawParam.toLowerCase())) {
+      repairedFamily = rawParam;
+    } else if (rawPrimitive && VALID_FAMILIES_MAP.has(rawPrimitive.toLowerCase())) {
+      repairedFamily = rawPrimitive;
+    } else if (parsed.reasoning) {
+      // Check if reasoning mentions a canonical family
+      for (const [key, fam] of VALID_FAMILIES_MAP.entries()) {
+        if (new RegExp(`\\b${key}\\b`, 'i').test(parsed.reasoning)) {
+          repairedFamily = fam;
+          break;
+        }
+      }
+    }
+
+    if (repairedFamily) {
+      rawFamily = repairedFamily;
+      if (!rawPrimitive) rawPrimitive = primitiveHolder;
+    } else {
+      console.warn(`[llm_agent] rejected malformed LLM response: algorithmFamily="${rawFamily}" is a primitive enum value, not an algorithm family`);
+      return null;
+    }
   }
 
   // Validate against canonical registry families
@@ -69,13 +145,22 @@ function validateLlmResponse(parsed) {
   }
 
   // Validate primitive: must be in VALID_PRIMITIVES enum or coerced to null
-  const rawPrimitive = (parsed.primitive || '').trim().toLowerCase();
   const canonicalPrimitive = VALID_PRIMITIVES.has(rawPrimitive) ? rawPrimitive : null;
 
   const rawConfidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
-  if (rawConfidence <= 0) return null;
+  if (rawConfidence <= 0) {
+    return {
+      isCrypto: false,
+      algorithmFamily: null,
+      primitive: null,
+      parameterSet: null,
+      confidence: 0,
+      reasoning: parsed.reasoning || '',
+    };
+  }
 
   return {
+    isCrypto: true,
     algorithmFamily: canonicalFamily,
     primitive: canonicalPrimitive,
     parameterSet: parsed.parameterSet || null,
@@ -97,54 +182,88 @@ function shouldVerify(existingEvidenceClasses = new Set()) {
 function buildPrompt({ codeText, filePath, candidates }) {
   const candidateBlock = (candidates || [])
     .map((c) => `- ${c.entry.algorithmFamily} (${c.entry.primitive}), similarity ${c.score.toFixed(2)}`)
-    .join('\n') || '(no close matches from the retrieval corpus)';
+    .join('\n');
 
   return [
     {
       role: 'system',
       content:
-        'You are a static-analysis assistant identifying cryptographic algorithm usage in source code. ' +
-        'Respond with ONLY a JSON object, no markdown fences, no prose. ' +
-        `Valid "primitive" values: ${Array.from(VALID_PRIMITIVES).join(', ')}. ` +
-        `"algorithmFamily" MUST be a specific named algorithm from this list if it matches: ${registry.algorithmFamilies.join(', ')}. ` +
-        'CRITICAL: Do NOT set "algorithmFamily" to a primitive type (like "stream-cipher", "block-cipher", or "hash"). ' +
-        'If the specific algorithm is not in the list or the code does not use cryptography, set "algorithmFamily" to null. ' +
-        'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, ' +
-        '"confidence": number (0-1), "reasoning": string (max 2 sentences)}',
+        'You are a static-analysis assistant identifying cryptographic algorithm usage in source code. Respond with ONLY a JSON object, no markdown fences, no prose.\n' +
+        `Valid "primitive" values: ${Array.from(VALID_PRIMITIVES).join(', ')}.\n` +
+        'Valid "algorithmFamily" values MUST be specific algorithm names: AES, RSA, ECDSA, EdDSA, HMAC, SHA-2, SHA-3, HKDF, PBKDF2, Argon2, bcrypt, scrypt, ChaCha20, etc.\n\n' +
+        'CRITICAL RULES:\n' +
+        '1. "algorithmFamily" is the specific algorithm name (e.g. "ECDSA", "SHA-2", "AES", "HKDF"), NOT a primitive category.\n' +
+        '2. If the code does not use cryptography, set "algorithmFamily" to null and "confidence" to 0.\n\n' +
+        'EXAMPLES:\n' +
+        'Code: crypto.createHash("sha256").update(data)\n' +
+        'Output: {"algorithmFamily": "SHA-2", "primitive": "hash", "parameterSet": "SHA-256", "confidence": 0.95, "reasoning": "Uses SHA-256 hash algorithm."}\n\n' +
+        'Code: verifyCustomAttestation(attestationObject)\n' +
+        'Output: {"algorithmFamily": "ECDSA", "primitive": "signature", "parameterSet": "P-256", "confidence": 0.85, "reasoning": "WebAuthn attestation signature verification."}\n\n' +
+        'Code: getSessionData(req.session)\n' +
+        'Output: {"algorithmFamily": null, "primitive": null, "parameterSet": null, "confidence": 0.0, "reasoning": "No cryptographic algorithm used."}\n\n' +
+        'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, "confidence": number, "reasoning": string}',
     },
     {
       role: 'user',
       content:
         `File: ${filePath}\n\nCode:\n\`\`\`\n${codeText}\n\`\`\`\n\n` +
-        `Similar known crypto usages from a labeled corpus (candidate hints, may be irrelevant):\n${candidateBlock}`,
+        `Similar known crypto usages from a labeled corpus (candidate hints, may be irrelevant):\n` +
+        `${candidateBlock || '(no close matches from the retrieval corpus)'}`,
     },
   ];
 }
 
-/** Ollama /api/chat shape. Swap this function's body for another endpoint. */
-async function callLLM(messages) {
-  console.log(`[llm_agent] Requesting Ollama endpoint ${OFFLINE_LLM_URL} (model: ${OFFLINE_LLM_MODEL})`);
-  console.log('[llm_agent] Raw Prompt Messages:\n', JSON.stringify(messages, null, 2));
-  const res = await fetch(OFFLINE_LLM_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: OFFLINE_LLM_MODEL, messages, stream: false, format: 'json' }),
-  });
-  if (!res.ok) {
-    throw new Error(`Offline LLM endpoint ${OFFLINE_LLM_URL} returned ${res.status}`);
-  }
-  const data = await res.json();
-  const content = data.message?.content ?? '';
-  console.log('[llm_agent] Raw LLM Response Content:\n', content);
-  return content;
-}
-
 function parseModelJson(raw) {
-  const cleaned = raw.trim().replace(/^```json\s*|^```\s*|```$/g, '');
+  if (!raw) return null;
+  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
   try {
     return JSON.parse(cleaned);
   } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { return JSON.parse(match[0]); } catch { return null; }
+    }
     return null;
+  }
+}
+
+/** Ollama /api/chat shape. Swap this function's body for another endpoint. */
+async function callLLM(messages, { timeoutMs = 15000 } = {}) {
+  const url = getLlmUrl();
+  const model = getLlmModel();
+  console.log(`[llm_agent] Requesting Ollama endpoint ${url} (model: ${model})`);
+  console.log('[llm_agent] Raw Prompt Messages:\n', JSON.stringify(messages, null, 2));
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: false,
+        format: 'json',
+        options: {
+          temperature: 0.0,
+          num_predict: 128,
+        },
+      }),
+      signal: controller ? controller.signal : undefined,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`LLM call HTTP ${res.status}: ${res.statusText} — ${errBody}`);
+    }
+
+    const data = await res.json();
+    console.log('[llm_agent] Raw LLM Response Content:\n', data?.message?.content || data);
+    return data?.message?.content || '';
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -153,25 +272,74 @@ function parseModelJson(raw) {
  * INTERPRETIVE Evidence entry, or null if the model found nothing / the
  * call failed / the response didn't parse / validation failed.
  */
-async function verifySpan({ filePath, line, codeText, candidates = [], contextCategory = 'unknown' }) {
-  let validated;
+async function verifySpan({ filePath, line, codeText, candidates = [], contextCategory = 'unknown', stats = null }) {
+  const startTime = Date.now();
+  if (stats) stats.llmCallsAttempted++;
+
+  let raw;
   try {
-    const raw = await callLLM(buildPrompt({ codeText, filePath, candidates }));
-    const parsed = parseModelJson(raw);
-    validated = validateLlmResponse(parsed);
+    raw = await callLLM(buildPrompt({ codeText, filePath, candidates }));
   } catch (err) {
-    console.warn(`[llm_agent] verification failed for ${filePath}:${line} — ${err.message}`);
+    if (stats) {
+      stats.llmCallsFailed++;
+      stats.wallClockMs += (Date.now() - startTime);
+      if (stats.failureReasons) {
+        if (err.name === 'AbortError' || (err.message && err.message.toLowerCase().includes('timeout'))) {
+          stats.failureReasons.timeout++;
+        } else {
+          stats.failureReasons.connection_error++;
+        }
+      }
+    }
+    console.warn(`[llm_agent] verification call failed for ${filePath}:${line} — ${err.message}`);
     return null;
   }
 
-  if (!validated || !validated.algorithmFamily) return null;
+  const parsed = parseModelJson(raw);
+  if (!parsed) {
+    if (stats) {
+      stats.llmCallsFailed++;
+      stats.wallClockMs += (Date.now() - startTime);
+      if (stats.failureReasons) stats.failureReasons.invalid_json++;
+    }
+    console.warn(`[llm_agent] verification failed for ${filePath}:${line} — malformed JSON response: "${raw.slice(0, 100)}"`);
+    return null;
+  }
+
+  const result = validateLlmResponse(parsed);
+  if (!result) {
+    // Genuine schema mismatch / unresolvable malformed response
+    if (stats) {
+      stats.llmCallsFailed++;
+      stats.wallClockMs += (Date.now() - startTime);
+      if (stats.failureReasons) stats.failureReasons.schema_mismatch++;
+    }
+    console.warn(`[llm_agent] verification validation rejected for ${filePath}:${line} — schema mismatch / unrecognized algorithm. Raw response: ${JSON.stringify(parsed)}`);
+    return null;
+  }
+
+  if (result.isCrypto === false) {
+    // Valid response identifying no cryptographic usage (success with negative result)
+    if (stats) {
+      stats.llmCallsSucceeded++;
+      stats.noCryptoDetected = (stats.noCryptoDetected || 0) + 1;
+      stats.wallClockMs += (Date.now() - startTime);
+    }
+    console.log(`[llm_agent] verified no cryptographic usage for ${filePath}:${line} (${result.reasoning || 'no crypto'})`);
+    return null;
+  }
+
+  if (stats) {
+    stats.llmCallsSucceeded++;
+    stats.wallClockMs += (Date.now() - startTime);
+  }
 
   const finding = new CryptoFinding({
     assetType: 'algorithm',
-    name: validated.algorithmFamily,
-    algorithmFamily: validated.algorithmFamily,
-    primitive: validated.primitive,
-    parameterSet: validated.parameterSet,
+    name: result.algorithmFamily,
+    algorithmFamily: result.algorithmFamily,
+    primitive: result.primitive,
+    parameterSet: result.parameterSet,
     filePath,
     line,
     contextCategory,
@@ -180,8 +348,8 @@ async function verifySpan({ filePath, line, codeText, candidates = [], contextCa
   finding.addEvidence(new Evidence({
     source: 'llm',
     evidenceClass: EvidenceClass.INTERPRETIVE,
-    detail: validated.reasoning || '',
-    rawConfidence: validated.confidence,
+    detail: result.reasoning || '',
+    rawConfidence: result.confidence,
     filePath,
     line,
   }));

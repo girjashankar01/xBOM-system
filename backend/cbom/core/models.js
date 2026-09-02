@@ -11,6 +11,7 @@ const EvidenceClass = Object.freeze({
   DIRECT: 'direct',             // recognized API + literal algorithm/param
   SUPPORTING: 'supporting',     // dependency present, embedding similarity, constant match
   INTERPRETIVE: 'interpretive', // LLM classification
+  UNCLASSIFIED: 'unclassified', // candidate span for LLM verification
 });
 
 class Evidence {

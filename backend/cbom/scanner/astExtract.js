@@ -1386,25 +1386,46 @@ function walkNodeModules(nodeModulesDir, results = []) {
   }
 }
 
-function walkDirectory(dir, results = [], isRoot = true) {
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', 'coverage', '.next',
+  '__tests__', '__mocks__', 'test', 'tests', 'fixtures',
+]);
+
+function isTestPath(filename, relPath = '') {
+  if (/[._-](test|spec)\.[a-zA-Z0-9]+$/i.test(filename)) return true;
+  const normalized = relPath.replace(/\\/g, '/');
+  if (/(?:^|\/)(?:__tests__|__mocks__|test|tests)\//i.test(normalized)) return true;
+  return false;
+}
+
+function walkDirectory(dir, targetDir = dir, results = [], isRoot = true) {
   if (!fs.existsSync(dir)) return results;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
+    const relPath = path.relative(targetDir, full).replace(/\\/g, '/');
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' && isRoot) {
         walkNodeModules(full, results);
-      } else if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
-        walkDirectory(full, results, false);
+      } else if (!SKIP_DIRS.has(entry.name)) {
+        walkDirectory(full, targetDir, results, false);
       }
-    } else if (/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(entry.name)) {
-      results.push(full);
+    } else if (/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+      if (!isTestPath(entry.name, relPath)) {
+        results.push(full);
+      }
     }
   }
   return results;
 }
 
 function scan(targetDir) {
-  const files = walkDirectory(targetDir);
+  const files = walkDirectory(targetDir, targetDir);
   const allFindings = [];
 
   for (const file of files) {
