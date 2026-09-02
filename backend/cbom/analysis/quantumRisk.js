@@ -28,7 +28,7 @@
 //     until the project has a real data-classification pass — documented
 //     here and in the top-level summary, not hidden.
 
-const { AssetType, Primitive, NistQuantumLevel } = require('../core/taxonomy');
+const { AssetType, Primitive, MaterialType, NistQuantumLevel } = require('../core/taxonomy');
 
 // Broken outright by Shor's algorithm, independent of key size.
 const SHOR_BROKEN_FAMILIES = new Set([
@@ -70,47 +70,54 @@ function bucketBySize(size, table) {
   return NistQuantumLevel.L0_BROKEN;
 }
 
-/** Returns a NistQuantumLevel (0-5) for a finding. Falls back to L1
- * ("not yet known-safe") rather than guessing a worse or better level when
- * the family/primitive/parameterSet don't resolve to anything in the
- * tables above. */
+/** Returns a NistQuantumLevel (0-5) for a finding. */
 function nistQuantumLevelFor(finding) {
   const family = (finding.algorithmFamily || finding.name || '').toUpperCase();
 
+  // CSPRNG and salts are not algorithmically quantum-vulnerable
+  if (finding.primitive === Primitive.DRBG || finding.materialType === MaterialType.SALT || family === 'CSPRNG') {
+    return NistQuantumLevel.L5_PQC_NATIVE;
+  }
+
+  // Key/cert material or certificates
   if (
     (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL || finding.assetType === AssetType.CERTIFICATE) &&
-    finding.parameterSet && /rsa|ec|dsa/i.test(finding.parameterSet)
+    finding.parameterSet && /rsa|ec|dsa|sha256withrsa/i.test(finding.parameterSet)
   ) {
-    // keysCerts.js stores the cert's signature algorithm in parameterSet —
-    // a key/cert secured by a Shor-broken signature scheme is itself L0.
     return NistQuantumLevel.L0_BROKEN;
   }
 
+  // Asymmetric families broken by Shor's algorithm
   if (SHOR_BROKEN_FAMILIES.has(family)) return NistQuantumLevel.L0_BROKEN;
   if (CLASSICALLY_BROKEN_FAMILIES.has(family)) return NistQuantumLevel.L0_BROKEN;
 
-  if (finding.primitive === Primitive.BLOCK_CIPHER || finding.primitive === Primitive.STREAM_CIPHER || finding.primitive === Primitive.AE) {
-    return bucketBySize(keySizeOf(finding), SYMMETRIC_QUANTUM_LEVEL_BY_KEYSIZE);
+  // Modern symmetric-based password KDFs (bcrypt, PBKDF2 with SHA-256/512, scrypt, Argon2)
+  if (finding.primitive === Primitive.KDF || /^(BCRYPT|PBKDF2|SCRYPT|ARGON2)$/i.test(family)) {
+    if (finding.parameterSet && /md5|sha1/i.test(finding.parameterSet)) {
+      return NistQuantumLevel.L1; // weak underlying hash
+    }
+    return NistQuantumLevel.L5_PQC_NATIVE;
   }
+
+  // Symmetric block/stream ciphers and authenticated encryption
+  if (finding.primitive === Primitive.BLOCK_CIPHER || finding.primitive === Primitive.STREAM_CIPHER || finding.primitive === Primitive.AE) {
+    const size = keySizeOf(finding);
+    return bucketBySize(size, SYMMETRIC_QUANTUM_LEVEL_BY_KEYSIZE);
+  }
+
+  // Hashes and MACs
   if (finding.primitive === Primitive.HASH || finding.primitive === Primitive.MAC) {
     const m = family.match(/(\d{3})/);
     const digestBits = m ? parseInt(m[1], 10) : keySizeOf(finding);
     return bucketBySize(digestBits, HASH_QUANTUM_LEVEL_BY_DIGEST_BITS);
   }
 
-  // KDF/DRBG/unresolved primitive: no established quantum-level convention
-  // to bucket against — L1 is the safe default (assume unproven, don't
-  // fabricate a specific level).
+  // Default fallback for unrecognized algorithms
   return NistQuantumLevel.L1;
 }
 
 /**
  * Heuristic sensitivity label, used only as classify_risk()'s third input.
- * NOT a real data-classification engine. Keys/certs and asymmetric
- * signature/key-agreement material in production default to "high";
- * anything in test/vendor context is downgraded regardless of asset type,
- * mirroring the non-punitive-but-lower-weight treatment
- * analysis/confidence.js already applies via CONTEXT_CAP.
  */
 function inferDataSensitivity(finding) {
   if (finding.contextCategory === 'test' || finding.contextCategory === 'vendor') return 'low';
@@ -126,9 +133,9 @@ function inferDataSensitivity(finding) {
   return 'medium';
 }
 
-/** Direct port of the guide's classify_risk() pseudocode — buckets only,
- * never a year. */
-function classifyRisk(nistQuantumLevel, dataSensitivity) {
+/** Direct port of classify_risk() with explicit non-quantum handling for CSPRNGs/salts */
+function classifyRisk(nistQuantumLevel, dataSensitivity, isEntropyOrSalt = false) {
+  if (isEntropyOrSalt) return 'NONE';
   if (nistQuantumLevel === NistQuantumLevel.L0_BROKEN && dataSensitivity === 'high') return 'CRITICAL';
   if (nistQuantumLevel === NistQuantumLevel.L0_BROKEN) return 'HIGH';
   if (nistQuantumLevel <= NistQuantumLevel.L2) return 'MEDIUM';
@@ -136,15 +143,14 @@ function classifyRisk(nistQuantumLevel, dataSensitivity) {
 }
 
 /**
- * Mutates and returns findings with `.nistQuantumLevel` and `.quantumRisk`
- * set. Run AFTER context_classifier/classify.js (Phase 4) and
- * analysis/confidence.js (Phase 7) — inferDataSensitivity() reads
- * contextCategory, which must already be final.
+ * Mutates and returns findings with `.nistQuantumLevel` and `.quantumRisk` set.
  */
 function classifyFindings(findings) {
   for (const f of findings) {
+    const family = (f.algorithmFamily || f.name || '').toUpperCase();
+    const isEntropyOrSalt = f.primitive === Primitive.DRBG || f.materialType === MaterialType.SALT || family === 'CSPRNG';
     f.nistQuantumLevel = nistQuantumLevelFor(f);
-    f.quantumRisk = classifyRisk(f.nistQuantumLevel, inferDataSensitivity(f));
+    f.quantumRisk = classifyRisk(f.nistQuantumLevel, inferDataSensitivity(f), isEntropyOrSalt);
   }
   return findings;
 }

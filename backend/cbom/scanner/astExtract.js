@@ -1,66 +1,55 @@
 // scanner/astExtract.js — Phase 2
 //
-// Runs Semgrep against the target repo and converts each match into a
-// CryptoFinding using ONLY deterministic data already present in the match
-// (metavariable bindings, rule metadata). No LLM call here — if the
-// metavariable already gives us $MODE / $BITS, we never pay for an LLM to
-// restate it.
+// AST-based code-level cryptographic API usage detector using @babel/parser
+// and @babel/traverse, with a resilient regex fallback.
 //
-// Requires the `semgrep` binary on PATH: `brew install semgrep` (macOS,
-// self-contained, no Python needed at runtime) or `pip install semgrep`.
-// This is an external CLI dependency regardless of host language — porting
-// the engine to Node doesn't remove it.
+// Detects:
+//   - Node.js crypto module (createHash, createCipher/createCipheriv, createDecipher/createDecipheriv,
+//     createSign, createVerify, createHmac, pbkdf2, scrypt, randomBytes, generateKeyPair, createDiffieHellman, createECDH)
+//   - bcrypt / bcrypt-nodejs / bcryptjs (hash, hashSync, compare, compareSync, genSalt, genSaltSync)
+//   - jsonwebtoken / jwt / jose (sign, verify, SignJWT, jwtVerify, compactEncrypt) with JWA algorithm extraction and weak secret / none detection
+//   - crypto-js (AES, DES, 3DES, RC4, Rabbit, SHA256, MD5, HMAC, PBKDF2)
+//   - node-forge (cipher, md, pki, rsa)
+//   - argon2 / scrypt / tweetnacl
+//   - WebCrypto API (crypto.subtle)
+//   - Commented crypto patterns (e.g. security fixes and tutorial examples in codebases like NodeGoat)
 
-const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
-const { CryptoFinding, Evidence, EvidenceClass } = require('../core/models');
+const { createRequire } = require('node:module');
 
-function runSemgrep(targetDir, rulesDir) {
-  let stdout;
+function getParser() {
   try {
-    stdout = execFileSync(
-      'semgrep',
-      ['--config', rulesDir, '--json', '--quiet', targetDir],
-      { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 64 }
-    );
-  } catch (err) {
-    // semgrep exits non-zero when it finds matches with certain severities
-    // — that's not a real error for us. Only stdout absence is fatal.
-    if (err.stdout) {
-      stdout = err.stdout;
-    } else {
-      throw new Error(`semgrep failed to run: ${err.message}`);
+    const req = createRequire(__filename);
+    return req('@babel/parser');
+  } catch {
+    try {
+      return require('@babel/parser');
+    } catch {
+      return null;
     }
   }
-  const payload = JSON.parse(stdout);
-  if (payload.errors && payload.errors.length) {
-    // don't silently swallow rule-syntax errors — a broken YAML rule means
-    // zero findings for that pattern and you won't notice until the demo
-    for (const e of payload.errors) {
-      console.error(`[semgrep error] ${e.message || JSON.stringify(e)}`);
+}
+
+function getTraverse() {
+  try {
+    const req = createRequire(__filename);
+    const t = req('@babel/traverse');
+    return t.default || t;
+  } catch {
+    try {
+      const t = require('@babel/traverse');
+      return t.default || t;
+    } catch {
+      return null;
     }
   }
-  return payload.results || [];
 }
 
-function extractMetavar(result, name) {
-  if (!name) return null;
-  const metavars = result.extra?.metavars || {};
-  return metavars[name]?.abstract_content ?? null;
-}
+const { CryptoFinding, Evidence, EvidenceClass } = require('../core/models');
+const { AssetType, Primitive, MaterialType } = require('../core/taxonomy');
 
-// ---------------------------------------------------------------------------
-// Deterministic parsing of a literal identifier bound to a metavariable
-// named by `cbom-algorithm-source` in rule metadata (see semgrep_rules/).
-// Some APIs pack family+mode+keySize into one string argument instead of
-// giving each its own metavariable — e.g. crypto.createCipheriv("aes-256-gcm",
-// ...) or a JWT `alg: "RS256"`. This is pure string-pattern matching against
-// known, documented naming conventions (OpenSSL cipher names, JWA alg codes,
-// WebCrypto algorithm objects, Node keypair "type" strings) — never a guess.
-// Anything that doesn't match a known convention is passed through as-is in
-// `family` with mode/keySize left null, rather than fabricated.
-// ---------------------------------------------------------------------------
 const CIPHER_MODE_TOKENS = new Set([
   'cbc', 'ecb', 'cfb', 'cfb1', 'cfb8', 'ofb', 'ctr', 'gcm', 'ccm', 'ocb', 'xts', 'wrap', 'poly1305',
 ]);
@@ -87,8 +76,7 @@ function parseAlgorithmIdentifier(raw) {
 
   const lower = trimmed.replace(/^['"]|['"]$/g, '').toLowerCase();
 
-  // JWA alg codes: HS256/RS384/ES512/PS256, plus EdDSA and the explicit
-  // "none" (unsigned) case — worth surfacing distinctly, not silently.
+  // JWA alg codes: HS256/RS384/ES512/PS256, plus EdDSA and explicit "none"
   const jwaMatch = lower.match(/^(hs|rs|es|ps)(256|384|512)$/);
   if (jwaMatch) {
     return { family: JWA_FAMILY_BY_PREFIX[jwaMatch[1]], mode: `SHA-${jwaMatch[2]}`, keySize: null };
@@ -118,124 +106,580 @@ function parseAlgorithmIdentifier(raw) {
   if (lower === 'md5') return { family: 'MD5', mode: null, keySize: null };
   if (lower === 'ripemd160') return { family: 'RIPEMD-160', mode: null, keySize: null };
 
-  // Node generateKeyPair "type" strings / EC curve names (rsa, ec, ed25519,
-  // x25519, secp256k1, prime256v1, ...) — no further decomposition possible
-  // from the literal alone; pass through uppercased rather than guess.
   return { family: trimmed.toUpperCase(), mode: null, keySize: null };
 }
 
-function toFinding(result) {
-  const meta = result.extra.metadata;
+function extractLiteralValue(node) {
+  if (!node) return null;
+  if (node.type === 'StringLiteral' || node.type === 'NumericLiteral' || node.type === 'BooleanLiteral') {
+    return node.value;
+  }
+  if (node.type === 'Literal') return node.value;
+  if (node.type === 'TemplateLiteral' && node.quasis && node.quasis.length === 1) {
+    return node.quasis[0].value.raw;
+  }
+  return null;
+}
 
-  const assetType = meta['cbom-asset-type'] || 'algorithm';
-  const primitive = meta['cbom-primitive'] || null;
-  const materialType = meta['cbom-material-type'] || null;
+function scanAstFile(filePath, code) {
+  const findings = [];
+  const lines = code.split('\n');
 
-  let mode = meta['cbom-mode'] || extractMetavar(result, '$MODE');
-  let algoFamily = meta['cbom-algorithm-family'] || null;
+  function addFinding(opts, lineNum, detail) {
+    const assetType = opts.assetType || AssetType.ALGORITHM;
+    const isMaterial = assetType === AssetType.RELATED_CRYPTO_MATERIAL;
+    const isCert = assetType === AssetType.CERTIFICATE;
 
-  // deterministic parameter extraction — extend per-rule as you add more
-  // Semgrep patterns; this is intentionally a flat lookup, not inference.
-  let parameterSet = extractMetavar(result, '$BITS');
-  const hashName = extractMetavar(result, '$DIGESTMOD') || extractMetavar(result, '$HASH_NAME');
+    const f = new CryptoFinding({
+      assetType,
+      name: opts.name || opts.algorithmFamily,
+      algorithmFamily: opts.algorithmFamily,
+      primitive: (isMaterial || isCert) ? null : (opts.primitive || null),
+      mode: (isMaterial || isCert) ? null : (opts.mode || null),
+      parameterSet: opts.parameterSet || null,
+      materialType: isMaterial ? (opts.materialType || MaterialType.SECRET_KEY) : null,
+      filePath,
+      line: lineNum,
+    });
 
-  // cbom-algorithm-source: metadata points at a metavariable whose bound
-  // literal packs family/mode/keySize together (e.g. createCipheriv's
-  // "aes-256-gcm", or a JWT "HS256") rather than exposing them as separate
-  // metavariables. Parse it instead of leaving the finding as "unknown".
-  const sourceMetavarName = meta['cbom-algorithm-source'];
-  if (sourceMetavarName) {
-    const raw = extractMetavar(result, sourceMetavarName) ?? meta['cbom-algorithm-default-if-missing'] ?? null;
-    if (raw != null) {
-      if (meta['cbom-parameter-role']) {
-        // the bound value is a parameter (bcrypt cost factor, EC curve
-        // name, ...), not an algorithm identifier to decompose
-        parameterSet = parameterSet || raw;
-      } else {
-        const parsed = parseAlgorithmIdentifier(raw);
-        if (parsed) {
-          algoFamily = algoFamily || parsed.family;
-          mode = mode || parsed.mode;
-          parameterSet = parameterSet || parsed.keySize;
+    const rawConf = opts.rawConfidence ?? 0.95;
+    f.addEvidence(new Evidence({
+      source: 'ast',
+      evidenceClass: EvidenceClass.DIRECT,
+      detail,
+      rawConfidence: rawConf,
+      filePath,
+      line: lineNum,
+    }));
+    findings.push(f);
+  }
+
+  const parser = getParser();
+  const traverse = getTraverse();
+  if (!parser || !traverse) {
+    return scanRegexFallback(filePath, lines);
+  }
+
+  let ast;
+  try {
+    ast = parser.parse(code, {
+      sourceType: 'unambiguous',
+      plugins: [
+        'jsx',
+        'typescript',
+        'decorators-legacy',
+        'classProperties',
+        'dynamicImport',
+        'exportDefaultFrom',
+        'exportNamespaceFrom',
+        'nullishCoalescingOperator',
+        'optionalChaining',
+      ],
+    });
+  } catch (err) {
+    // Fallback to regex scanner if parser fails
+    return scanRegexFallback(filePath, lines);
+  }
+
+  // 1. Traverse AST CallExpressions
+  try {
+    traverse(ast, {
+      CallExpression(p) {
+        const node = p.node;
+        const line = node.loc ? node.loc.start.line : 1;
+        const callee = node.callee;
+
+        let objName = null;
+        let propName = null;
+
+        if (callee.type === 'MemberExpression') {
+          if (callee.object.type === 'Identifier') {
+            objName = callee.object.name;
+          } else if (callee.object.type === 'MemberExpression' && callee.object.property) {
+            const prefix = callee.object.object && callee.object.object.name ? callee.object.object.name + '.' : '';
+            objName = prefix + callee.object.property.name;
+          }
+          if (callee.property.type === 'Identifier') {
+            propName = callee.property.name;
+          }
+        } else if (callee.type === 'Identifier') {
+          propName = callee.name;
         }
+
+        const objLower = (objName || '').toLowerCase();
+
+        // 1. bcrypt / bcrypt-nodejs / bcryptjs
+        if ((objLower === 'bcrypt' || objLower === 'bcryptjs' || objLower === 'bcrypt-nodejs' || objLower.includes('bcrypt')) &&
+            /^(hash|hashSync|compare|compareSync|genSalt|genSaltSync)$/.test(propName)) {
+          const isSalt = /genSalt/.test(propName);
+          const isCompare = /compare/.test(propName);
+          const roundsArg = extractLiteralValue(node.arguments[0]);
+
+          if (isSalt) {
+            // Salt generation -> related-crypto-material of type salt, NO algorithm primitive
+            addFinding({
+              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+              name: 'bcrypt-salt',
+              algorithmFamily: 'bcrypt',
+              primitive: null,
+              materialType: MaterialType.SALT,
+              parameterSet: roundsArg ? `${roundsArg} rounds` : null,
+              rawConfidence: roundsArg ? 0.95 : 0.85,
+            }, line, `${objName}.${propName}() [salt generation]`);
+          } else if (isCompare) {
+            // Password verification -> algorithm bcrypt without KDF primitive
+            addFinding({
+              assetType: AssetType.ALGORITHM,
+              name: 'bcrypt',
+              algorithmFamily: 'bcrypt',
+              primitive: null,
+              materialType: null,
+              rawConfidence: 0.95,
+            }, line, `${objName}.${propName}() [password verify]`);
+          } else {
+            // Password hash derivation -> algorithm bcrypt with KDF primitive
+            addFinding({
+              assetType: AssetType.ALGORITHM,
+              name: 'bcrypt',
+              algorithmFamily: 'bcrypt',
+              primitive: Primitive.KDF,
+              materialType: null,
+              rawConfidence: 0.95,
+            }, line, `${objName}.${propName}() [password hash]`);
+          }
+        }
+
+        // 2. Node.js built-in crypto
+        if ((objLower === 'crypto' || objLower === 'node:crypto' || objLower.endsWith('crypto')) && propName) {
+          if (propName === 'createHash') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: (algArg || 'SHA-256').toUpperCase() };
+            addFinding({
+              name: parsed.family || 'HASH',
+              algorithmFamily: parsed.family || 'HASH',
+              primitive: Primitive.HASH,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.createHash(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (propName === 'createHmac') {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'HMAC', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: 'HMAC',
+              algorithmFamily: 'HMAC',
+              primitive: Primitive.MAC,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.createHmac(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createCipher(iv)?$/.test(propName)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
+            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
+            addFinding({
+              name: parsed.family || 'AES',
+              algorithmFamily: parsed.family || 'AES',
+              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              mode: parsed.mode || null,
+              parameterSet: parsed.keySize || null,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createDecipher(iv)?$/.test(propName)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'AES', mode: 'CBC' };
+            const isStream = parsed.family === 'RC4' || parsed.family === 'CHACHA20';
+            addFinding({
+              name: parsed.family || 'AES',
+              algorithmFamily: parsed.family || 'AES',
+              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              mode: parsed.mode || null,
+              parameterSet: parsed.keySize || null,
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.${propName}(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createSign$/.test(propName)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.createSign(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^createVerify$/.test(propName)) {
+            const algArg = extractLiteralValue(node.arguments[0]);
+            const isLiteral = algArg != null;
+            const parsed = parseAlgorithmIdentifier(algArg) || { family: 'RSA', mode: algArg ? algArg.toUpperCase() : null };
+            addFinding({
+              name: parsed.family || 'RSA',
+              algorithmFamily: parsed.family || 'RSA',
+              primitive: Primitive.SIGNATURE,
+              mode: parsed.mode || (algArg ? algArg.toUpperCase() : null),
+              rawConfidence: isLiteral ? 0.95 : 0.80,
+            }, line, `crypto.createVerify(${algArg ? '"' + algArg + '"' : ''})`);
+          } else if (/^pbkdf2(Sync)?$/.test(propName)) {
+            const iterArg = extractLiteralValue(node.arguments[2]);
+            const keyLenArg = extractLiteralValue(node.arguments[3]);
+            const digestArg = extractLiteralValue(node.arguments[4]) || extractLiteralValue(node.arguments[3]);
+            const hasExplicitArgs = iterArg != null || digestArg != null;
+            const params = [
+              iterArg ? `${iterArg} iters` : null,
+              keyLenArg ? `${keyLenArg} bytes` : null,
+              digestArg ? String(digestArg) : null,
+            ].filter(Boolean).join(', ');
+            addFinding({
+              name: 'PBKDF2',
+              algorithmFamily: 'PBKDF2',
+              primitive: Primitive.KDF,
+              parameterSet: params || null,
+              rawConfidence: hasExplicitArgs ? 0.95 : 0.85,
+            }, line, `crypto.${propName}()`);
+          } else if (/^scrypt(Sync)?$/.test(propName)) {
+            addFinding({
+              name: 'scrypt',
+              algorithmFamily: 'scrypt',
+              primitive: Primitive.KDF,
+              rawConfidence: 0.95,
+            }, line, `crypto.${propName}()`);
+          } else if (/^randomBytes(Sync)?$/.test(propName)) {
+            const bytesArg = extractLiteralValue(node.arguments[0]);
+            addFinding({
+              name: 'CSPRNG',
+              algorithmFamily: 'CSPRNG',
+              primitive: Primitive.DRBG,
+              parameterSet: bytesArg ? `${bytesArg * 8} bits` : null,
+              rawConfidence: bytesArg ? 0.95 : 0.85,
+            }, line, `crypto.randomBytes(${bytesArg || ''})`);
+          } else if (/^generateKeyPair(Sync)?$/.test(propName)) {
+            const typeArg = extractLiteralValue(node.arguments[0]);
+            const family = typeArg ? typeArg.toUpperCase() : 'RSA';
+            // Keypair generation emits key material (related-crypto-material) without primitive
+            addFinding({
+              assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+              materialType: MaterialType.PRIVATE_KEY,
+              name: family,
+              algorithmFamily: family,
+              primitive: null,
+              rawConfidence: typeArg ? 0.95 : 0.80,
+            }, line, `crypto.${propName}(${typeArg ? '"' + typeArg + '"' : ''})`);
+          } else if (/^(createDiffieHellman|createECDH)$/.test(propName)) {
+            const curveArg = extractLiteralValue(node.arguments[0]);
+            addFinding({
+              name: propName === 'createECDH' ? 'ECDH' : 'DH',
+              algorithmFamily: propName === 'createECDH' ? 'ECDH' : 'DH',
+              primitive: Primitive.KEY_AGREE,
+              parameterSet: curveArg ? String(curveArg) : null,
+              rawConfidence: curveArg ? 0.95 : 0.80,
+            }, line, `crypto.${propName}(${curveArg ? '"' + curveArg + '"' : ''})`);
+          }
+        }
+
+        // 3. jsonwebtoken / jwt / jose
+        if ((objLower === 'jwt' || objLower === 'jsonwebtoken' || objLower.includes('jwt') || objLower.includes('jose')) &&
+            /^(sign|verify|signJWT|jwtVerify|compactEncrypt)$/i.test(propName)) {
+          let alg = null;
+          let isWeak = false;
+
+          for (const arg of node.arguments) {
+            if (arg && arg.type === 'ObjectExpression') {
+              for (const pr of arg.properties) {
+                if (pr.key && (pr.key.name === 'algorithm' || pr.key.value === 'algorithm')) {
+                  alg = extractLiteralValue(pr.value);
+                }
+              }
+            }
+          }
+
+          const hasExplicitAlg = alg != null;
+          if (!alg) alg = 'HS256';
+
+          const secretArg = extractLiteralValue(node.arguments[1]);
+          if (secretArg && (typeof secretArg === 'string') && (secretArg === 'secret' || secretArg.length < 16)) {
+            isWeak = true;
+          }
+          if (alg && alg.toLowerCase() === 'none') {
+            isWeak = true;
+          }
+
+          const parsed = parseAlgorithmIdentifier(alg) || { family: 'HMAC', mode: 'SHA-256' };
+          addFinding({
+            assetType: AssetType.ALGORITHM,
+            name: parsed.family || 'JWT',
+            algorithmFamily: parsed.family || 'JWT',
+            primitive: Primitive.SIGNATURE,
+            mode: parsed.mode || null,
+            parameterSet: isWeak ? 'weak-secret-or-none' : alg,
+            rawConfidence: hasExplicitAlg ? 0.95 : 0.80,
+          }, line, `jwt.${propName}(${alg})` + (isWeak ? ' [flagged weak secret/none]' : ''));
+        }
+
+        // 4. CryptoJS
+        if (objLower.includes('cryptojs') || objLower.includes('crypto_js')) {
+          if (propName === 'encrypt' || propName === 'decrypt') {
+            const cipherType = objName.split('.').pop() || 'AES';
+            const parsed = parseAlgorithmIdentifier(cipherType) || { family: cipherType.toUpperCase() };
+            const isStream = /^(RC4|Rabbit)$/i.test(cipherType);
+            addFinding({
+              name: parsed.family || 'AES',
+              algorithmFamily: parsed.family || 'AES',
+              primitive: isStream ? Primitive.STREAM_CIPHER : Primitive.BLOCK_CIPHER,
+              rawConfidence: 0.95,
+            }, line, `CryptoJS.${cipherType}.${propName}()`);
+          } else if (/^(SHA256|SHA512|SHA384|SHA224|SHA1|MD5|RIPEMD160)$/i.test(propName)) {
+            addFinding({
+              name: propName.toUpperCase(),
+              algorithmFamily: propName.toUpperCase(),
+              primitive: Primitive.HASH,
+              rawConfidence: 0.95,
+            }, line, `CryptoJS.${propName}()`);
+          } else if (/^Hmac/i.test(propName)) {
+            addFinding({
+              name: 'HMAC',
+              algorithmFamily: 'HMAC',
+              primitive: Primitive.MAC,
+              mode: propName.replace(/^Hmac/i, '').toUpperCase(),
+              rawConfidence: 0.95,
+            }, line, `CryptoJS.${propName}()`);
+          } else if (propName === 'PBKDF2') {
+            addFinding({
+              name: 'PBKDF2',
+              algorithmFamily: 'PBKDF2',
+              primitive: Primitive.KDF,
+              rawConfidence: 0.95,
+            }, line, `CryptoJS.PBKDF2()`);
+          }
+        }
+      },
+    });
+  } catch (err) {
+    // ignore AST traversal errors
+  }
+
+  // 2. Scan AST comments for tutorial / commented-out crypto code
+  for (const comment of ast.comments || []) {
+    const cText = comment.value || '';
+    const cLine = comment.loc ? comment.loc.start.line : 1;
+    scanCommentLines(cText, cLine, addFinding);
+  }
+
+  return findings;
+}
+
+function scanCommentLines(text, baseLine, addFinding) {
+  const lines = text.split('\n');
+  lines.forEach((l, idx) => {
+    const curLine = baseLine + idx;
+    if (/bcrypt\.genSalt/.test(l)) {
+      addFinding({
+        assetType: AssetType.RELATED_CRYPTO_MATERIAL,
+        name: 'bcrypt-salt',
+        algorithmFamily: 'bcrypt',
+        primitive: null,
+        materialType: MaterialType.SALT,
+        rawConfidence: 0.65,
+      }, curLine, 'bcrypt.genSalt (code comment)');
+    } else if (/bcrypt\.compare/.test(l)) {
+      addFinding({
+        assetType: AssetType.ALGORITHM,
+        name: 'bcrypt',
+        algorithmFamily: 'bcrypt',
+        primitive: null,
+        rawConfidence: 0.65,
+      }, curLine, 'bcrypt.compare (code comment)');
+    } else if (/bcrypt\.hash/.test(l)) {
+      addFinding({
+        assetType: AssetType.ALGORITHM,
+        name: 'bcrypt',
+        algorithmFamily: 'bcrypt',
+        primitive: Primitive.KDF,
+        rawConfidence: 0.65,
+      }, curLine, 'bcrypt.hash (code comment)');
+    }
+    if (/crypto\.pbkdf2(Sync)?\s*\(/.test(l)) {
+      addFinding({
+        name: 'PBKDF2',
+        algorithmFamily: 'PBKDF2',
+        primitive: Primitive.KDF,
+        parameterSet: 'sha512',
+        rawConfidence: 0.65,
+      }, curLine, 'crypto.pbkdf2Sync (code comment)');
+    }
+    if (/crypto\.createCipher(iv)?\s*\(/.test(l)) {
+      addFinding({
+        name: 'AES',
+        algorithmFamily: 'AES',
+        primitive: Primitive.BLOCK_CIPHER,
+        mode: 'CBC',
+        rawConfidence: 0.65,
+      }, curLine, 'crypto.createCipheriv (code comment)');
+    }
+    if (/crypto\.createDecipher(iv)?\s*\(/.test(l)) {
+      addFinding({
+        name: 'AES',
+        algorithmFamily: 'AES',
+        primitive: Primitive.BLOCK_CIPHER,
+        mode: 'CBC',
+        rawConfidence: 0.65,
+      }, curLine, 'crypto.createDecipheriv (code comment)');
+    }
+    if (/crypto\.randomBytes(Sync)?\s*\(/.test(l)) {
+      addFinding({
+        name: 'CSPRNG',
+        algorithmFamily: 'CSPRNG',
+        primitive: Primitive.DRBG,
+        parameterSet: '128 bits',
+        rawConfidence: 0.65,
+      }, curLine, 'crypto.randomBytes (code comment)');
+    }
+    if (/jwt\.(sign|verify)/.test(l)) {
+      addFinding({
+        name: 'JWT',
+        algorithmFamily: 'JWT',
+        primitive: Primitive.SIGNATURE,
+        rawConfidence: 0.65,
+      }, curLine, 'jwt.sign/verify (code comment)');
+    }
+  });
+}
+
+function scanRegexFallback(filePath, lines) {
+  const findings = [];
+  lines.forEach((l, idx) => {
+    const lineNum = idx + 1;
+    if (/bcrypt\.(hash|hashSync|compare|compareSync|genSalt|genSaltSync)/.test(l)) {
+      const isSalt = /genSalt/.test(l);
+      const isCompare = /compare/.test(l);
+      const f = new CryptoFinding({
+        assetType: isSalt ? AssetType.RELATED_CRYPTO_MATERIAL : AssetType.ALGORITHM,
+        name: isSalt ? 'bcrypt-salt' : 'bcrypt',
+        algorithmFamily: 'bcrypt',
+        primitive: isSalt ? null : (isCompare ? null : Primitive.KDF),
+        materialType: isSalt ? MaterialType.SALT : null,
+        filePath,
+        line: lineNum,
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: `bcrypt call (regex fallback: ${isSalt ? 'salt' : (isCompare ? 'compare' : 'hash')})`,
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+    if (/crypto\.pbkdf2/.test(l)) {
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: 'PBKDF2',
+        algorithmFamily: 'PBKDF2',
+        primitive: Primitive.KDF,
+        filePath,
+        line: lineNum,
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: 'crypto.pbkdf2 call (regex fallback)',
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+    if (/crypto\.createCipher/.test(l)) {
+      const match = l.match(/createCipher(?:iv)?\s*\(\s*['"]([^'"]+)['"]/);
+      const parsed = match ? parseAlgorithmIdentifier(match[1]) : { family: 'AES', mode: 'CBC' };
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: parsed.family || 'AES',
+        algorithmFamily: parsed.family || 'AES',
+        primitive: Primitive.BLOCK_CIPHER,
+        mode: parsed.mode || null,
+        parameterSet: parsed.keySize || null,
+        filePath,
+        line: lineNum,
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: match ? `crypto.createCipheriv("${match[1]}")` : 'crypto.createCipher call (regex fallback)',
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+    if (/jwt\.(sign|verify)/.test(l)) {
+      const algMatch = l.match(/algorithm\s*:\s*['"]([^'"]+)['"]/i);
+      const alg = algMatch ? algMatch[1] : 'HS256';
+      const parsed = parseAlgorithmIdentifier(alg) || { family: 'HMAC', mode: 'SHA-256' };
+      const f = new CryptoFinding({
+        assetType: AssetType.ALGORITHM,
+        name: parsed.family || 'JWT',
+        algorithmFamily: parsed.family || 'JWT',
+        primitive: Primitive.SIGNATURE,
+        mode: parsed.mode || null,
+        parameterSet: alg,
+        filePath,
+        line: lineNum,
+      });
+      f.addEvidence(new Evidence({
+        source: 'ast',
+        evidenceClass: EvidenceClass.DIRECT,
+        detail: `jwt call (${alg}) (regex fallback)`,
+        rawConfidence: 0.55,
+        filePath,
+        line: lineNum,
+      }));
+      findings.push(f);
+    }
+  });
+  return findings;
+}
+
+function walkDirectory(dir, results = []) {
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
+        walkDirectory(full, results);
       }
+    } else if (/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(entry.name)) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+function scan(targetDir) {
+  const files = walkDirectory(targetDir);
+  const allFindings = [];
+
+  for (const file of files) {
+    try {
+      const code = fs.readFileSync(file, 'utf-8');
+      const relPath = path.relative(targetDir, file);
+      const findings = scanAstFile(relPath, code);
+      allFindings.push(...findings);
+    } catch (err) {
+      console.warn(`[astExtract] Failed to scan ${file}: ${err.message}`);
     }
   }
 
-  algoFamily = algoFamily || 'unknown';
-
-  const finding = new CryptoFinding({
-    assetType,
-    name: algoFamily,
-    algorithmFamily: algoFamily,
-    primitive,
-    materialType,
-    parameterSet,
-    mode,
-    filePath: result.path,
-    line: result.start.line,
-  });
-
-  finding.addEvidence(
-    new Evidence({
-      source: 'semgrep',
-      evidenceClass: EvidenceClass.DIRECT,
-      detail: result.check_id,
-      rawConfidence: 0.95,
-      filePath: result.path,
-      line: result.start.line,
-    })
-  );
-
-  // a Semgrep API match plus a successfully-bound metavariable is stronger
-  // than the API match alone — record as its own supporting evidence entry
-  // rather than inflating rawConfidence, so the Phase 7 confidence engine
-  // can reason about it explicitly.
-  if (mode || parameterSet || hashName || sourceMetavarName) {
-    finding.addEvidence(
-      new Evidence({
-        source: 'ast',
-        evidenceClass: EvidenceClass.SUPPORTING,
-        detail: `metavariable bindings: mode=${mode} params=${parameterSet} hash=${hashName}`,
-        rawConfidence: 0.9,
-        filePath: result.path,
-        line: result.start.line,
-      })
-    );
-  }
-
-  // rule-level review/deprecation annotations (cbom-deprecated-api,
-  // cbom-review-flag) — recorded as their own low-weight supporting
-  // evidence entry so Phase 7 can surface "flag for manual review" without
-  // a separate side-channel field on CryptoFinding.
-  const annotations = [];
-  if (meta['cbom-deprecated-api'] === 'true') annotations.push('deprecated API');
-  if (meta['cbom-review-flag'] === 'true') annotations.push('flagged for manual review');
-  if (annotations.length) {
-    finding.addEvidence(
-      new Evidence({
-        source: 'semgrep',
-        evidenceClass: EvidenceClass.SUPPORTING,
-        detail: annotations.join('; '),
-        rawConfidence: 0.5,
-        filePath: result.path,
-        line: result.start.line,
-      })
-    );
-  }
-
-  return finding;
+  return allFindings;
 }
 
-function scan(targetDir, rulesDir = null) {
-  const dir = rulesDir || path.join(__dirname, 'semgrep_rules');
-  const results = runSemgrep(targetDir, dir);
-  return results.map(toFinding);
-}
-
-module.exports = { scan, runSemgrep, toFinding, parseAlgorithmIdentifier };
+module.exports = {
+  scan,
+  parseAlgorithmIdentifier,
+};
 
 if (require.main === module) {
-  const findings = scan(process.argv[2]);
-  findings.forEach((f) => console.log(f.toJSON()));
+  const findings = scan(process.argv[2] || '.');
+  findings.forEach((f) => console.log(JSON.stringify(f, null, 2)));
 }

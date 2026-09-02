@@ -98,27 +98,42 @@ function scan(targetDir) {
         filePath,
         line,
       });
+      const ext = path.extname(filePath).toLowerCase();
       finding.fingerprint = fp;
-      finding.keyExtension = path.extname(filePath).toLowerCase();
+      finding.keyExtension = ext;
+
+      const hasStdExt = KEY_FILE_EXTENSIONS.has(ext);
+      const baseRawConf = hasStdExt ? 0.95 : 0.80;
+
+      finding.addEvidence(
+        new Evidence({
+          source: 'keys_certs',
+          evidenceClass: EvidenceClass.DIRECT,
+          detail: `PEM header match (${label}), fingerprint=${fp}${hasStdExt ? '' : ' (non-standard extension)'}`,
+          rawConfidence: baseRawConf,
+          filePath,
+          line,
+        })
+      );
 
       if (isCert) {
         const meta = parseCertMetadata(content);
         if (meta.signatureAlgorithm) finding.parameterSet = meta.signatureAlgorithm;
         if (meta.subject || meta.validTo) {
           finding.callContext = { subject: meta.subject, validTo: meta.validTo };
+          finding.addEvidence(
+            new Evidence({
+              source: 'keys_certs',
+              evidenceClass: EvidenceClass.SUPPORTING,
+              detail: `Parsed X.509 certificate metadata (subject=${meta.subject || 'unknown'})`,
+              rawConfidence: 0.90,
+              filePath,
+              line,
+            })
+          );
         }
       }
 
-      finding.addEvidence(
-        new Evidence({
-          source: 'keys_certs',
-          evidenceClass: EvidenceClass.DIRECT,
-          detail: `PEM header match, fingerprint=${fp}`,
-          rawConfidence: 0.98,
-          filePath,
-          line,
-        })
-      );
       findings.push(finding);
       break; // one PEM header type match per file is enough for our purposes
     }

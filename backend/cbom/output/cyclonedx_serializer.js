@@ -50,12 +50,24 @@ function buildAlgorithmProperties(f) {
 }
 
 function buildRelatedCryptoMaterialProperties(f) {
-  // Deliberately does NOT populate `id` from f.fingerprint — CycloneDX's
-  // relatedCryptoMaterialProperties.id has no confirmed format contract in
-  // the fetched spec examples, and guessing wrong there is worse than
-  // putting the same data in a namespaced property instead.
   const props = {};
   if (f.materialType) props.type = f.materialType;
+  return props;
+}
+
+function buildCertificateProperties(f) {
+  const props = {};
+  if (f.callContext && f.callContext.subject) props.subjectName = f.callContext.subject;
+  if (f.callContext && f.callContext.validTo) {
+    try {
+      props.notValidAfter = new Date(f.callContext.validTo).toISOString();
+    } catch {
+      props.notValidAfter = String(f.callContext.validTo);
+    }
+  }
+  if (f.signatureAlgorithm || f.parameterSet) {
+    props.signatureAlgorithm = f.signatureAlgorithm || f.parameterSet;
+  }
   return props;
 }
 
@@ -79,6 +91,7 @@ function buildCryptoComponent(f) {
   const cryptoProperties = { assetType: f.assetType };
   if (f.assetType === AssetType.ALGORITHM) cryptoProperties.algorithmProperties = buildAlgorithmProperties(f);
   if (f.assetType === AssetType.RELATED_CRYPTO_MATERIAL) cryptoProperties.relatedCryptoMaterialProperties = buildRelatedCryptoMaterialProperties(f);
+  if (f.assetType === AssetType.CERTIFICATE) cryptoProperties.certificateProperties = buildCertificateProperties(f);
   // protocolProperties intentionally omitted: core/models.js collects no
   // protocol-specific fields yet (version, cipher suites) — emitting an
   // empty object would be worse than omitting it. Add when a detector

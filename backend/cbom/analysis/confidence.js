@@ -37,17 +37,35 @@ const CONTEXT_CAP = {
 };
 
 function baseScore(evidence) {
-  const classes = new Set(evidence.map((e) => e.evidenceClass));
-  const hasDirect = classes.has(EvidenceClass.DIRECT);
-  const hasSupporting = classes.has(EvidenceClass.SUPPORTING);
-  const hasInterpretive = classes.has(EvidenceClass.INTERPRETIVE);
+  if (!evidence || !evidence.length) return 0.0;
 
-  if (hasDirect && hasSupporting) return SCORE_DIRECT_AND_SUPPORTING;
-  if (hasDirect) return SCORE_DIRECT_ONLY;
-  if (hasSupporting && hasInterpretive) return SCORE_SUPPORTING_AND_INTERPRETIVE;
-  if (hasInterpretive) return SCORE_INTERPRETIVE_ONLY;
-  if (hasSupporting) return SCORE_SUPPORTING_ONLY;
-  return SCORE_NO_EVIDENCE;
+  const directEv = evidence.filter((e) => e.evidenceClass === EvidenceClass.DIRECT);
+  const supportingEv = evidence.filter((e) => e.evidenceClass === EvidenceClass.SUPPORTING);
+  const interpretiveEv = evidence.filter((e) => e.evidenceClass === EvidenceClass.INTERPRETIVE);
+
+  if (directEv.length) {
+    const maxDirect = Math.max(...directEv.map((e) => e.rawConfidence));
+    if (supportingEv.length) {
+      return Math.min(0.99, Math.round((maxDirect + 0.04) * 100) / 100);
+    }
+    return maxDirect;
+  }
+
+  if (supportingEv.length && interpretiveEv.length) {
+    const maxSupp = Math.max(...supportingEv.map((e) => e.rawConfidence));
+    const maxInterp = Math.max(...interpretiveEv.map((e) => e.rawConfidence));
+    return Math.min(0.85, (maxSupp + maxInterp) / 2);
+  }
+
+  if (interpretiveEv.length) {
+    return Math.max(...interpretiveEv.map((e) => e.rawConfidence)) * 0.5;
+  }
+
+  if (supportingEv.length) {
+    return Math.max(...supportingEv.map((e) => e.rawConfidence)) * 0.25;
+  }
+
+  return 0.0;
 }
 
 function score(evidence, contextCategory = 'unknown') {

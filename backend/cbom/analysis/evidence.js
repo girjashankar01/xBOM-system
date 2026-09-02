@@ -34,6 +34,12 @@ function shouldMerge(a, b, lineWindow) {
   if (a.assetType !== b.assetType) return false;
   if (normalizedPath(a.filePath) !== normalizedPath(b.filePath)) return false;
   if (Math.abs(a.line - b.line) > lineWindow) return false;
+  if (a.line !== b.line) {
+    const aSources = new Set(a.evidence.map((e) => e.source));
+    for (const ev of b.evidence) {
+      if (aSources.has(ev.source)) return false;
+    }
+  }
   return algoIdentityCompatible(a.algorithmFamily || a.name, b.algorithmFamily || b.name);
 }
 

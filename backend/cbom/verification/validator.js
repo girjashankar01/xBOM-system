@@ -67,11 +67,43 @@ function validateFinding(finding) {
   checkEnum(finding.primitive, VALID_PRIMITIVES, 'primitive', id, issues);
   checkEnum(finding.materialType, VALID_MATERIAL_TYPES, 'materialType', id, issues);
 
-  if (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL && !finding.materialType) {
-    issues.push(new ValidationIssue({
-      level: 'error', field: 'materialType', findingId: id,
-      message: 'assetType is related-crypto-material but materialType is unset — CycloneDX requires relatedCryptoMaterialProperties.type',
-    }));
+  if (finding.assetType === AssetType.RELATED_CRYPTO_MATERIAL) {
+    if (!finding.materialType) {
+      issues.push(new ValidationIssue({
+        level: 'error', field: 'materialType', findingId: id,
+        message: 'assetType is related-crypto-material but materialType is unset — CycloneDX requires relatedCryptoMaterialProperties.type',
+      }));
+    }
+    if (finding.primitive) {
+      issues.push(new ValidationIssue({
+        level: 'error', field: 'primitive', findingId: id,
+        message: `assetType is related-crypto-material but primitive="${finding.primitive}" is set — primitive only belongs under algorithmProperties (asset type algorithm)`,
+      }));
+    }
+  }
+
+  if (finding.assetType === AssetType.ALGORITHM) {
+    if (finding.materialType) {
+      issues.push(new ValidationIssue({
+        level: 'error', field: 'materialType', findingId: id,
+        message: `assetType is algorithm but materialType="${finding.materialType}" is set — materialType only belongs under relatedCryptoMaterialProperties`,
+      }));
+    }
+  }
+
+  if (finding.assetType === AssetType.CERTIFICATE) {
+    if (finding.primitive) {
+      issues.push(new ValidationIssue({
+        level: 'error', field: 'primitive', findingId: id,
+        message: `assetType is certificate but primitive="${finding.primitive}" is set`,
+      }));
+    }
+    if (finding.materialType) {
+      issues.push(new ValidationIssue({
+        level: 'error', field: 'materialType', findingId: id,
+        message: `assetType is certificate but materialType="${finding.materialType}" is set`,
+      }));
+    }
   }
 
   checkAlgorithmFamily(finding, issues);
