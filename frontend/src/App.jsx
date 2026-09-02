@@ -4,8 +4,10 @@ import LoadingState from './components/LoadingState'
 import ErrorBanner from './components/ErrorBanner'
 import RiskSummary from './components/RiskSummary'
 import ComponentTable from './components/ComponentTable'
+import CbomTab from './components/CbomTab'
 import { scanRepo } from './api'
 import { enrichAllComponents, getAnomalyTypeBreakdown } from './utils/transform'
+import { getCryptoAssetsFromSbom } from './utils/cbomTransform'
 
 // idle -> loading -> results | error
 export default function App() {
@@ -13,6 +15,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [sbom, setSbom] = useState(null)
   const [repoUrl, setRepoUrl] = useState('')
+  const [activeTab, setActiveTab] = useState('sbom') // 'sbom' | 'cbom'
 
   const enrichedComponents = useMemo(
     () => (sbom ? enrichAllComponents(sbom) : []),
@@ -24,6 +27,11 @@ export default function App() {
     [sbom, enrichedComponents]
   )
 
+  const cryptoAssets = useMemo(
+    () => (sbom ? getCryptoAssetsFromSbom(sbom) : []),
+    [sbom]
+  )
+
   async function handleScan(url) {
     setStatus('loading')
     setError(null)
@@ -32,6 +40,7 @@ export default function App() {
       const result = await scanRepo(url)
       setSbom(result)
       setStatus('results')
+      setActiveTab('sbom')
     } catch (err) {
       setError(err.message || 'Something went wrong.')
       setStatus('error')
@@ -90,13 +99,39 @@ export default function App() {
         </div>
 
         {status === 'results' && sbom && (
-          <div className="flex flex-col gap-8">
-            <RiskSummary
-              riskSummary={sbom.riskSummary}
-              typeBreakdown={typeBreakdown}
-              repoUrl={repoUrl}
-            />
-            <ComponentTable components={enrichedComponents} />
+          <div className="flex flex-col gap-6">
+            <div className="flex items-center gap-1 border-b border-border">
+              <TabButton
+                label="Software"
+                active={activeTab === 'sbom'}
+                onClick={() => setActiveTab('sbom')}
+              />
+              <TabButton
+                label="Cryptography"
+                active={activeTab === 'cbom'}
+                onClick={() => setActiveTab('cbom')}
+              />
+            </div>
+
+            {activeTab === 'sbom' && (
+              <div className="flex flex-col gap-8">
+                <RiskSummary
+                  riskSummary={sbom.riskSummary}
+                  typeBreakdown={typeBreakdown}
+                  repoUrl={repoUrl}
+                />
+                <ComponentTable components={enrichedComponents} />
+              </div>
+            )}
+
+            {activeTab === 'cbom' && (
+              <CbomTab
+                assets={cryptoAssets}
+                repoUrl={repoUrl}
+                cbomCorrelation={sbom.cbomCorrelation}
+                rawCryptoComponents={sbom.cryptoComponents}
+              />
+            )}
           </div>
         )}
       </main>
@@ -107,5 +142,20 @@ export default function App() {
         </div>
       </footer>
     </div>
+  )
+}
+
+function TabButton({ label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+        active
+          ? 'border-accent text-text'
+          : 'border-transparent text-muted hover:text-text'
+      }`}
+    >
+      {label}
+    </button>
   )
 }

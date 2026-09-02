@@ -52,9 +52,9 @@ describe('npmLockParser', () => {
     expect(looseDep.dev).toBe(true);
   });
 
-  test('throws on lockfileVersion < 3', () => {
+  test('throws on lockfileVersion < 2', () => {
     expect(() => parseLockfile(OLD_VERSION_FIXTURE)).toThrow(
-      /lockfileVersion < 3 not supported/
+      /lockfileVersion < 2 not supported/
     );
   });
 

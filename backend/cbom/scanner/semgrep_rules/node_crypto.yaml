@@ -1,0 +1,190 @@
+# scanner/semgrep_rules/node_crypto.yaml
+#
+# Node.js built-in `crypto` module. Every rule's metadata points to which
+# metavariable holds the literal algorithm/mode/curve/type string so
+# scanner/astExtract.js can parse it deterministically — never guessed by an LLM.
+#
+# Convention (consumed by astExtract.js):
+#   cbom-asset-type       -> taxonomy.AssetType value
+#   cbom-primitive        -> taxonomy.Primitive value (default; may be refined
+#                             once the literal in cbom-algorithm-source is parsed)
+#   cbom-algorithm-family -> fixed family string if the API name alone implies it,
+#                             OMITTED if it must be parsed from cbom-algorithm-source
+#   cbom-algorithm-source -> name of the metavariable ($ALG, $TYPE, ...) holding
+#                             the literal to parse (e.g. "aes-256-gcm" -> family AES,
+#                             mode GCM, keySize 256)
+#   cbom-material-type    -> taxonomy.MaterialType value, when the call produces
+#                             key/cert material rather than an algorithm usage
+
+rules:
+  - id: node-crypto-createcipheriv
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createCipheriv($ALG, $KEY, $IV, ...)
+          - pattern: require("crypto").createCipheriv($ALG, $KEY, $IV, ...)
+          - pattern: require("node:crypto").createCipheriv($ALG, $KEY, $IV, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto symmetric/AE cipher instantiation via createCipheriv"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: block-cipher
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-createdecipheriv
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createDecipheriv($ALG, $KEY, $IV, ...)
+          - pattern: require("crypto").createDecipheriv($ALG, $KEY, $IV, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto symmetric/AE decipher instantiation via createDecipheriv"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: block-cipher
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-createcipher-legacy
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createCipher($ALG, $PASSWORD)
+          - pattern: crypto.createDecipher($ALG, $PASSWORD)
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "Deprecated Node crypto.createCipher/createDecipher — no explicit IV, key derived from a hash of the password. Flag as a weak/legacy pattern regardless of algorithm."
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: block-cipher
+      cbom-algorithm-source: $ALG
+      cbom-deprecated-api: "true"
+
+  - id: node-crypto-createhash
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash($ALG)
+          - pattern: require("crypto").createHash($ALG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto hash instantiation via createHash"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: hash
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-createhmac
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHmac($ALG, $KEY)
+          - pattern: require("crypto").createHmac($ALG, $KEY)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto HMAC instantiation via createHmac"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: mac
+      cbom-algorithm-family: HMAC
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-createsign
+    patterns:
+      - pattern: crypto.createSign($ALG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto signature creation via createSign"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-createverify
+    patterns:
+      - pattern: crypto.createVerify($ALG)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto signature verification via createVerify"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: signature
+      cbom-algorithm-source: $ALG
+
+  - id: node-crypto-generatekeypair
+    patterns:
+      - pattern-either:
+          - pattern: crypto.generateKeyPair($TYPE, $OPTS, $CALLBACK)
+          - pattern: crypto.generateKeyPairSync($TYPE, $OPTS)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto asymmetric keypair generation"
+    metadata:
+      cbom-asset-type: related-crypto-material
+      cbom-primitive: pke
+      cbom-material-type: private-key
+      cbom-algorithm-source: $TYPE
+
+  - id: node-crypto-diffiehellman
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createDiffieHellman(...)
+          - pattern: crypto.getDiffieHellman($GROUP)
+          - pattern: "crypto.diffieHellman({ privateKey: $PRIV, publicKey: $PUB })"
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto Diffie-Hellman key agreement"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: key-agree
+      cbom-algorithm-family: DH
+
+  - id: node-crypto-createecdh
+    patterns:
+      - pattern: crypto.createECDH($CURVE)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto ECDH key agreement"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: key-agree
+      cbom-algorithm-family: ECDH
+      cbom-algorithm-source: $CURVE
+
+  - id: node-crypto-pbkdf2
+    patterns:
+      - pattern-either:
+          - pattern: crypto.pbkdf2($PW, $SALT, $ITER, $KEYLEN, $DIGEST, $CALLBACK)
+          - pattern: crypto.pbkdf2Sync($PW, $SALT, $ITER, $KEYLEN, $DIGEST)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto PBKDF2 key derivation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: kdf
+      cbom-algorithm-family: PBKDF2
+      cbom-algorithm-source: $DIGEST
+
+  - id: node-crypto-scrypt
+    patterns:
+      - pattern-either:
+          - pattern: crypto.scrypt($PW, $SALT, $KEYLEN, $CALLBACK)
+          - pattern: crypto.scryptSync($PW, $SALT, $KEYLEN, ...)
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto scrypt key derivation"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: kdf
+      cbom-algorithm-family: scrypt
+
+  - id: node-crypto-randombytes
+    patterns:
+      - pattern-either:
+          - pattern: crypto.randomBytes($N)
+          - pattern: crypto.randomBytes($N, $CALLBACK)
+          - pattern: crypto.randomFillSync(...)
+          - pattern: crypto.randomUUID()
+    languages: [javascript, typescript]
+    severity: INFO
+    message: "Node crypto CSPRNG usage"
+    metadata:
+      cbom-asset-type: algorithm
+      cbom-primitive: drbg
+      cbom-algorithm-family: CSPRNG

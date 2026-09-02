@@ -27,7 +27,7 @@ describe('buildCycloneDX', () => {
   test('produces required top-level CycloneDX fields', () => {
     const sbom = buildCycloneDX({ components, vulnMap, anomalies });
     expect(sbom.bomFormat).toBe('CycloneDX');
-    expect(sbom.specVersion).toBe('1.5');
+    expect(sbom.specVersion).toBe('1.7');
     expect(sbom.version).toBe(1);
     expect(sbom.metadata.timestamp).toBeDefined();
     expect(() => new Date(sbom.metadata.timestamp).toISOString()).not.toThrow();
