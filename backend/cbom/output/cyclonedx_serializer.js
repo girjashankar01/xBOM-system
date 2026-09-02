@@ -41,17 +41,35 @@ function makeBomRef(finding) {
   return `crypto/${kind}/${slug}@${loc}`;
 }
 
+function mapEvidenceSource(src) {
+  if (src === 'ast' || src === 'keysCerts' || src === 'constants') return 'static';
+  if (src === 'sbom_sca') return 'sca';
+  if (src === 'vectorSearch') return 'embedding';
+  if (src === 'llm') return 'llm';
+  return 'static';
+}
+
 function buildAlgorithmProperties(f) {
   const props = {};
   if (f.primitive) props.primitive = f.primitive;
   if (f.parameterSet) props.parameterSetIdentifier = String(f.parameterSet);
   if (f.mode) props.mode = f.mode;
+  if (f.nistQuantumLevel != null) {
+    props.nistQuantumSecurityLevel = f.nistQuantumLevel;
+  }
+  if (f.classicalSecurityLevel != null) {
+    props.classicalSecurityLevel = f.classicalSecurityLevel;
+  }
   return props;
 }
 
 function buildRelatedCryptoMaterialProperties(f) {
-  const props = {};
+  const props = { state: 'active' };
   if (f.materialType) props.type = f.materialType;
+  if (f.parameterSet) {
+    const sz = parseInt(f.parameterSet, 10);
+    if (!isNaN(sz)) props.size = sz;
+  }
   return props;
 }
 
@@ -77,6 +95,8 @@ function buildCustomProperties(f) {
   if (f.exposureRisk) props.push({ name: 'cbomtool:exposureRisk', value: f.exposureRisk });
   if (f.nistQuantumLevel != null) props.push({ name: 'cbomtool:nistQuantumLevel', value: String(f.nistQuantumLevel) });
   if (f.confidence != null) props.push({ name: 'cbomtool:confidence', value: String(f.confidence) });
+  if (f.filePath) props.push({ name: 'cbomtool:filePath', value: f.filePath });
+  if (f.line != null) props.push({ name: 'cbomtool:line', value: String(f.line) });
   if (f.contextCategory) props.push({ name: 'cbomtool:context', value: f.contextCategory });
   if (f.sourceContext) props.push({ name: 'cbomtool:sourceContext', value: f.sourceContext });
   if (f.fingerprint) props.push({ name: 'cbomtool:fingerprint', value: f.fingerprint });
@@ -94,15 +114,17 @@ function buildCryptoComponent(f) {
   if (f.assetType === AssetType.ALGORITHM) cryptoProperties.algorithmProperties = buildAlgorithmProperties(f);
   if (f.assetType === AssetType.RELATED_CRYPTO_MATERIAL) cryptoProperties.relatedCryptoMaterialProperties = buildRelatedCryptoMaterialProperties(f);
   if (f.assetType === AssetType.CERTIFICATE) cryptoProperties.certificateProperties = buildCertificateProperties(f);
-  // protocolProperties intentionally omitted: core/models.js collects no
-  // protocol-specific fields yet (version, cipher suites) — emitting an
-  // empty object would be worse than omitting it. Add when a detector
-  // populates them.
+
+  const evidenceSources = Array.from(new Set((f.evidence || []).map((e) => mapEvidenceSource(e.source))));
 
   const component = {
     type: 'cryptographic-asset',
     'bom-ref': bomRef,
     name: f.name,
+    sourceFile: f.filePath,
+    sourceLine: f.line,
+    confidence: f.confidence,
+    evidenceSources: evidenceSources.length ? evidenceSources : ['static'],
     cryptoProperties,
   };
 

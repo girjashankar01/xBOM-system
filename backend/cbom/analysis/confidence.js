@@ -32,7 +32,7 @@ const SCORE_NO_EVIDENCE = 0.0;
 const CONTEXT_CAP = {
   production: 1.0,
   test: 0.4,
-  vendor: 0.4,
+  vendor: 0.7,
   unknown: 0.7,
 };
 
@@ -58,11 +58,11 @@ function baseScore(evidence) {
   }
 
   if (interpretiveEv.length) {
-    return Math.max(...interpretiveEv.map((e) => e.rawConfidence)) * 0.5;
+    return Math.max(...interpretiveEv.map((e) => e.rawConfidence)) * 0.6;
   }
 
   if (supportingEv.length) {
-    return Math.max(...supportingEv.map((e) => e.rawConfidence)) * 0.25;
+    return Math.max(...supportingEv.map((e) => e.rawConfidence));
   }
 
   return 0.0;

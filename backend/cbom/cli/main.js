@@ -91,7 +91,7 @@ async function runPipeline(targetDir, options = {}) {
   const inMemorySbom = sbomJson || sbom;
   if (!sbomAdapter && inMemorySbom) {
     try {
-      sbomAdapter = SbomAdapter.fromCycloneDxJson(inMemorySbom);
+      sbomAdapter = SbomAdapter.fromCycloneDxJson(inMemorySbom, { targetDir });
     } catch (err) {
       console.warn(`[main] could not load in-memory SBOM — skipping correlation. ${err.message}`);
     }
@@ -112,7 +112,7 @@ async function runPipeline(targetDir, options = {}) {
   }
 
   // Phase 1 / 3: SCA package-level crypto detection from SBOM
-  const scaFindings = sbomAdapter ? sbomAdapter.generateScaFindings() : [];
+  const scaFindings = sbomAdapter ? sbomAdapter.generateScaFindings({ astFindings }) : [];
 
   const rawFindings = [
     ...astFindings,
