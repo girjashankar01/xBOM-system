@@ -15,6 +15,8 @@ const { classifyLicense, classifyDeprecation } = require('../modules/license/lic
 const { buildCycloneDX } = require('../modules/serialize/cyclonedx');
 const { buildRiskSummary } = require('../modules/serialize/riskSummary');
 const { npmHighImpact } = require('npm-high-impact');
+const { runPipeline: runCbomPipeline } = require('../../cbom/cli/main');
+const { pMap } = require('../modules/cache/npmCache');
 
 const FRESHNESS_CONCURRENCY = 8;  // lowered from 25 — public registry throttles hard past this
 const LICENSE_CONCURRENCY = 8;
@@ -82,42 +84,62 @@ router.post('/scan', async (req, res) => {
 
     let freshnessHits = 0;
     let freshnessErrors = 0;
-    for (let i = 0; i < freshnessCandidates.length; i += FRESHNESS_CONCURRENCY) {
-      const batch = freshnessCandidates.slice(i, i + FRESHNESS_CONCURRENCY);
-      const results = await Promise.all(
-        batch.map(c =>
-          memoizedFreshness(c.name).catch(err => {
-            freshnessErrors++;
-            console.log(`[scan] freshness check failed for ${c.name}: ${err.message}`);
-            return null;
-          })
-        )
-      );
-      results.forEach((fresh, idx) => {
-        if (fresh) {
-          freshnessHits++;
-          addAnomalyHit(anomalies, batch[idx].purl, fresh);
+
+    const freshnessResults = await pMap(
+      freshnessCandidates,
+      async (c) => {
+        try {
+          return await memoizedFreshness(c.name);
+        } catch (err) {
+          freshnessErrors++;
+          return null;
         }
-      });
-      if (i + FRESHNESS_CONCURRENCY < freshnessCandidates.length) await sleep(BATCH_DELAY_MS);
-    }
+      },
+      { concurrency: 20 }
+    );
+
+    freshnessResults.forEach((fresh, idx) => {
+      if (fresh) {
+        freshnessHits++;
+        addAnomalyHit(anomalies, freshnessCandidates[idx].purl, fresh);
+      }
+    });
 
     console.log(`[scan] freshness hits: ${freshnessHits}, errors/timeouts: ${freshnessErrors}`);
 
-    for (let i = 0; i < components.length; i += LICENSE_CONCURRENCY) {
-      const batch = components.slice(i, i + LICENSE_CONCURRENCY);
-      const results = await Promise.all(batch.map(c => memoizedMetadata(c.name)));
-      results.forEach(({ license, deprecated }, idx) => {
-        const c = batch[idx];
-        c.license = license;
-        addAnomalyHit(anomalies, c.purl, classifyLicense(license));
-        addAnomalyHit(anomalies, c.purl, classifyDeprecation(deprecated));
-      });
-      if (i + LICENSE_CONCURRENCY < components.length) await sleep(BATCH_DELAY_MS);
-    }
+    const metadataResults = await pMap(
+      components,
+      c => memoizedMetadata(c.name),
+      { concurrency: 20 }
+    );
+
+    metadataResults.forEach((meta, idx) => {
+      const c = components[idx];
+      const license = (meta && meta.license) || 'UNKNOWN';
+      const deprecated = (meta && meta.deprecated) || null;
+      c.license = license;
+      addAnomalyHit(anomalies, c.purl, classifyLicense(license));
+      addAnomalyHit(anomalies, c.purl, classifyDeprecation(deprecated));
+    });
 
     const sbom = buildCycloneDX({ components, vulnMap, anomalies });
     sbom.riskSummary = buildRiskSummary(components, vulnMap, anomalies);
+
+    try {
+      const cbomResult = await runCbomPipeline(repoDir, {
+        sbom,
+        skipLlm: true,
+      });
+
+      if (cbomResult && cbomResult.cbom && Array.isArray(cbomResult.cbom.components)) {
+        sbom.cryptoComponents = cbomResult.cbom.components;
+      }
+      if (cbomResult && cbomResult.correlation) {
+        sbom.cbomCorrelation = cbomResult.correlation;
+      }
+    } catch (cbomErr) {
+      console.warn(`[scan] CBOM generation skipped or failed: ${cbomErr.message}`);
+    }
 
     res.json(sbom);
   } catch (err) {

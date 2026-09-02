@@ -1,25 +1,12 @@
 //license/licenseExtract.js
 
-const axios = require('axios');
-
-async function getWithRetry(url, attempt = 0) {
-  try {
-    return await axios.get(url, { timeout: 5000 });
-  } catch (err) {
-    const status = err.response && err.response.status;
-    if (status === 429 && attempt < 2) {
-      const retryAfter = err.response.headers['retry-after'];
-      const delay = retryAfter ? Number(retryAfter) * 1000 : 500 * 2 ** attempt;
-      await new Promise(r => setTimeout(r, delay));
-      return getWithRetry(url, attempt + 1);
-    }
-    throw err;
-  }
-}
+const { fetchPackageMetadata } = require('../cache/npmCache');
 
 async function getPackageMetadata(componentName) {
   try {
-    const { data } = await getWithRetry(`https://registry.npmjs.org/${encodeURIComponent(componentName)}`);
+    const data = await fetchPackageMetadata(componentName);
+    if (!data || data.notFound) return { license: 'UNKNOWN', deprecated: null };
+
     const license = extractLicense(data);
     const latestVersion = data['dist-tags'] && data['dist-tags'].latest;
     const versionInfo = latestVersion && data.versions ? data.versions[latestVersion] : null;

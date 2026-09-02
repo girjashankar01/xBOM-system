@@ -3,7 +3,7 @@
 function buildCycloneDX({ components, vulnMap, anomalies }) {
   return {
     bomFormat: 'CycloneDX',
-    specVersion: '1.5',
+    specVersion: '1.7',
     version: 1,
     metadata: {
       timestamp: new Date().toISOString(),
@@ -16,6 +16,7 @@ function buildCycloneDX({ components, vulnMap, anomalies }) {
 function buildComponent(c, anomalies) {
   const component = {
     type: 'library',
+    'bom-ref': c.purl,   
     name: c.name,
     version: c.version,
     purl: c.purl,

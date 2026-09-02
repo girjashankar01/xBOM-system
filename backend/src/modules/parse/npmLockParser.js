@@ -5,8 +5,8 @@ const fs = require('fs');
 function parseLockfile(lockPath) {
   const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
 
-  if (lockData.lockfileVersion < 3) {
-    throw new Error('lockfileVersion < 3 not supported — regenerate with npm 7+');
+  if (!lockData.lockfileVersion || lockData.lockfileVersion < 2 || !lockData.packages) {
+    throw new Error('lockfileVersion < 2 not supported — regenerate with npm 7+');
   }
 
   const components = [];
