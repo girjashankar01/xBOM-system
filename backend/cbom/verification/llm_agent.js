@@ -252,7 +252,7 @@ async function callLLM(messages, { timeoutMs = 15000 } = {}) {
         format: 'json',
         options: {
           temperature: 0.0,
-          num_predict: 128,
+          num_predict: 256,
         },
       }),
       signal: controller ? controller.signal : undefined,
@@ -276,6 +276,28 @@ async function callLLM(messages, { timeoutMs = 15000 } = {}) {
  * INTERPRETIVE Evidence entry, or null if the model found nothing / the
  * call failed / the response didn't parse / validation failed.
  */
+function enrichSecurityReasoning(result) {
+  const family = result.algorithmFamily;
+  const parameter = result.parameterSet || family;
+
+  const recommendations = {
+    MD5: 'MD5 is cryptographically broken and should not be used for security-sensitive hashing. Replace it with SHA-256 or a stronger approved hash where appropriate.',
+    'SHA-1': 'SHA-1 is deprecated for security-sensitive applications. Replace it with SHA-256 or a stronger approved hash.',
+    DES: 'DES has an inadequate key size and is considered insecure. Replace it with AES-256 or another approved modern cipher.',
+    '3DES': '3DES is deprecated and should be migrated to a modern authenticated encryption algorithm such as AES-GCM.',
+    'RSA-1024': 'RSA-1024 is too weak for modern security requirements. Migrate to RSA-2048 or stronger, or an approved modern alternative.',
+    'RSA-2048': 'RSA-2048 remains widely used, but should be tracked for long-term cryptographic migration and quantum-readiness.',
+    'AES-128': 'AES-128 is currently considered secure for many applications, but AES-256 may be preferred for longer-term security requirements.',
+  };
+
+  const recommendation = recommendations[family] ||
+    'Review this cryptographic usage against current security requirements and use an approved modern algorithm and parameter set.';
+
+  return `Detected ${family}${parameter && parameter !== family ? ` (${parameter})` : ''} cryptographic usage. ` +
+    `The source code indicates use of this algorithm as identified by the LLM. ` +
+    `Security significance: this cryptographic asset should be evaluated for strength, configuration, and long-term security requirements. ` +
+    `Recommendation: ${recommendation}`;
+}
 async function verifySpan({ filePath, line, codeText, candidates = [], contextCategory = 'unknown', stats = null }) {
   const startTime = Date.now();
   if (stats) stats.llmCallsAttempted++;
@@ -347,12 +369,13 @@ async function verifySpan({ filePath, line, codeText, candidates = [], contextCa
     filePath,
     line,
     contextCategory,
+    confidence: result.confidence,
   });
 
   finding.addEvidence(new Evidence({
     source: 'llm',
     evidenceClass: EvidenceClass.INTERPRETIVE,
-    detail: result.reasoning || '',
+    detail: enrichSecurityReasoning(result),
     rawConfidence: result.confidence,
     filePath,
     line,
