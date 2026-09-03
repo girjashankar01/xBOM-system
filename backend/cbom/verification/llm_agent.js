@@ -188,7 +188,11 @@ function buildPrompt({ codeText, filePath, candidates }) {
     {
       role: 'system',
       content:
-        'You are a static-analysis assistant identifying cryptographic algorithm usage in source code. Respond with ONLY a JSON object, no markdown fences, no prose.\n' +
+        'You are a cybersecurity static-analysis assistant specializing in cryptographic asset detection.\n' +
+        'Your job is to analyze source code and determine whether it contains cryptographic usage. When crypto is present, identify the specific algorithm and provide useful security context.\n' +
+        'Respond with ONLY a JSON object, no markdown fences, no prose.\n' +
+        'Your analysis should explain WHY the code is cryptographic, its SECURITY SIGNIFICANCE, and a concise REMEDIATION recommendation when appropriate.\n' +
+        'Never invent cryptographic usage that is not supported by the code. Treat retrieved corpus examples as supporting hints only; the source code is the primary evidence.\n' +
         `Valid "primitive" values: ${Array.from(VALID_PRIMITIVES).join(', ')}.\n` +
         'Valid "algorithmFamily" values MUST be specific algorithm names: AES, RSA, ECDSA, EdDSA, HMAC, SHA-2, SHA-3, HKDF, PBKDF2, Argon2, bcrypt, scrypt, ChaCha20, etc.\n\n' +
         'CRITICAL RULES:\n' +
@@ -201,7 +205,7 @@ function buildPrompt({ codeText, filePath, candidates }) {
         'Output: {"algorithmFamily": "ECDSA", "primitive": "signature", "parameterSet": "P-256", "confidence": 0.85, "reasoning": "WebAuthn attestation signature verification."}\n\n' +
         'Code: getSessionData(req.session)\n' +
         'Output: {"algorithmFamily": null, "primitive": null, "parameterSet": null, "confidence": 0.0, "reasoning": "No cryptographic algorithm used."}\n\n' +
-        'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, "confidence": number, "reasoning": string}',
+        'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, "confidence": number, "reasoning": string}. The "reasoning" field MUST briefly include: (1) what crypto usage was detected, (2) why the code indicates that algorithm, (3) the security significance, and (4) a practical remediation or recommendation when relevant.',
     },
     {
       role: 'user',
