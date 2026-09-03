@@ -48,6 +48,11 @@ VALID_FAMILIES_MAP.set('sha-512', 'SHA-2');
 VALID_FAMILIES_MAP.set('sha1', 'SHA-1');
 VALID_FAMILIES_MAP.set('sha-1', 'SHA-1');
 
+// NOTE: algorithmFamily is canonicalized to family-level names only
+// (AES, RSA, SHA-2, ...) — key-size/mode distinctions like "AES-128" or
+// "RSA-2048" live in parameterSet, never in algorithmFamily. Any lookup
+// table keyed on algorithmFamily should only ever use family names.
+
 function isNoCryptoResponse(parsed) {
   if (!parsed || typeof parsed !== 'object') return false;
   const rawFam = (parsed.algorithmFamily || '').trim().toLowerCase();
@@ -189,16 +194,20 @@ function buildPrompt({ codeText, filePath, candidates }) {
       role: 'system',
       content:
         'You are a static-analysis assistant identifying cryptographic algorithm usage in source code. Respond with ONLY a JSON object, no markdown fences, no prose.\n' +
+        'Never invent cryptographic usage that is not supported by the code. Treat retrieved corpus examples as supporting hints only; the source code is the primary evidence.\n' +
         `Valid "primitive" values: ${Array.from(VALID_PRIMITIVES).join(', ')}.\n` +
         'Valid "algorithmFamily" values MUST be specific algorithm names: AES, RSA, ECDSA, EdDSA, HMAC, SHA-2, SHA-3, HKDF, PBKDF2, Argon2, bcrypt, scrypt, ChaCha20, etc.\n\n' +
         'CRITICAL RULES:\n' +
         '1. "algorithmFamily" is the specific algorithm name (e.g. "ECDSA", "SHA-2", "AES", "HKDF"), NOT a primitive category.\n' +
-        '2. If the code does not use cryptography, set "algorithmFamily" to null and "confidence" to 0.\n\n' +
+        '2. If the code does not use cryptography, set "algorithmFamily" to null and "confidence" to 0.\n' +
+        '3. Keep "reasoning" brief (1-2 sentences): what was detected and why the code indicates that algorithm. If the algorithm is a deprecated or weak choice (e.g. MD5, SHA-1, DES, 3DES, RSA below 2048 bits), say so and note the practical risk.\n\n' +
         'EXAMPLES:\n' +
         'Code: crypto.createHash("sha256").update(data)\n' +
         'Output: {"algorithmFamily": "SHA-2", "primitive": "hash", "parameterSet": "SHA-256", "confidence": 0.95, "reasoning": "Uses SHA-256 hash algorithm."}\n\n' +
         'Code: verifyCustomAttestation(attestationObject)\n' +
         'Output: {"algorithmFamily": "ECDSA", "primitive": "signature", "parameterSet": "P-256", "confidence": 0.85, "reasoning": "WebAuthn attestation signature verification."}\n\n' +
+        'Code: crypto.createHash("md5").update(data)\n' +
+        'Output: {"algorithmFamily": "MD5", "primitive": "hash", "parameterSet": "MD5", "confidence": 0.95, "reasoning": "Uses MD5, which is cryptographically broken and unsuitable for security-sensitive hashing."}\n\n' +
         'Code: getSessionData(req.session)\n' +
         'Output: {"algorithmFamily": null, "primitive": null, "parameterSet": null, "confidence": 0.0, "reasoning": "No cryptographic algorithm used."}\n\n' +
         'Schema: {"algorithmFamily": string|null, "primitive": string|null, "parameterSet": string|null, "confidence": number, "reasoning": string}',
@@ -248,7 +257,11 @@ async function callLLM(messages, { timeoutMs = 15000 } = {}) {
         format: 'json',
         options: {
           temperature: 0.0,
-          num_predict: 128,
+          // Slightly higher than the pure-classification budget (was 128)
+          // since reasoning now includes a brief weak-algorithm callout —
+          // still far short of V2's 256, which was sized for a 4-part
+          // security narrative we no longer ask the model to write.
+          num_predict: 160,
         },
       }),
       signal: controller ? controller.signal : undefined,
@@ -343,6 +356,7 @@ async function verifySpan({ filePath, line, codeText, candidates = [], contextCa
     filePath,
     line,
     contextCategory,
+    confidence: result.confidence,
   });
 
   finding.addEvidence(new Evidence({
