@@ -72,31 +72,29 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10 flex flex-col gap-8">
+      <main className={`flex-1 max-w-6xl w-full mx-auto px-6 ${status === 'results' ? 'pt-4 pb-10' : 'py-10'} flex flex-col gap-6`}>
         {status !== 'results' && (
-          <div className="flex flex-col items-start gap-2 mt-6">
-            <h1 className="text-2xl sm:text-3xl font-semibold text-text tracking-tight">
-              Know what's in your software &amp; cryptography.
-            </h1>
-            <p className="text-muted max-w-xl text-sm sm:text-base">
-              Point this at a public npm/Node.js repo to generate a unified Software &amp; Cryptography
-              Bill of Materials (xBOM) — auditing dependency vulnerabilities, cryptographic primitives,
-              keys, and quantum readiness.
-            </p>
-          </div>
+          <>
+            <div className="flex flex-col items-start gap-2 mt-6">
+              <h1 className="text-2xl sm:text-3xl font-semibold text-text tracking-tight">
+                Know what's in your software &amp; cryptography.
+              </h1>
+              <p className="text-muted max-w-xl text-sm sm:text-base">
+                Point this at a public npm/Node.js repo to generate a unified Software &amp; Cryptography
+                Bill of Materials (xBOM) — auditing dependency vulnerabilities, cryptographic primitives,
+                keys, and quantum readiness.
+              </p>
+            </div>
+
+            <div className="flex flex-col items-start gap-6">
+              <ScanInput onSubmit={handleScan} disabled={status === 'loading'} />
+              {status === 'loading' && <LoadingState />}
+              {status === 'error' && (
+                <ErrorBanner message={error} onDismiss={() => setStatus('idle')} />
+              )}
+            </div>
+          </>
         )}
-
-        <div className="flex flex-col items-start gap-6">
-          {status !== 'results' && (
-            <ScanInput onSubmit={handleScan} disabled={status === 'loading'} />
-          )}
-
-          {status === 'loading' && <LoadingState />}
-
-          {status === 'error' && (
-            <ErrorBanner message={error} onDismiss={() => setStatus('idle')} />
-          )}
-        </div>
 
         {status === 'results' && sbom && (
           <div className="flex flex-col gap-6">

@@ -8,12 +8,12 @@ const TIER_BAR_COLOR = {
 }
 
 const LEVEL_LABEL = {
-  0: 'Level 0 — Broken by Quantum (RSA, ECC)',
-  1: 'Level 1 — 128-bit Classical (AES-128)',
-  2: 'Level 2 — SHA-256 Collision Level',
-  3: 'Level 3 — NIST PQC Baseline (Quantum-Safe)',
-  4: 'Level 4 — SHA-384 Collision Level',
-  5: 'Level 5 — Maximum Quantum-Safe (AES-256)',
+  0: 'Level 0 — Broken (RSA, ECC)',
+  1: 'Level 1 — 128-bit (AES)',
+  2: 'Level 2 — SHA-256',
+  3: 'Level 3 — Quantum-Safe (PQC)',
+  4: 'Level 4 — SHA-384',
+  5: 'Level 5 — Maximum Safe (AES-256)',
 }
 
 export default function QuantumRiskChart({ byQuantumRisk = {}, onOpenGuide }) {
@@ -29,7 +29,7 @@ export default function QuantumRiskChart({ byQuantumRisk = {}, onOpenGuide }) {
             onClick={onOpenGuide}
             className="text-[11px] text-accent hover:underline font-mono transition-colors"
           >
-            What do these levels mean? (NIST PQC Guide)
+            What do these mean? (NIST Guide)
           </button>
         )}
       </div>
@@ -46,7 +46,7 @@ export default function QuantumRiskChart({ byQuantumRisk = {}, onOpenGuide }) {
               onClick={onOpenGuide}
               title={exp ? `${exp.title}: ${exp.summary}` : undefined}
             >
-              <span className="w-64 shrink-0 text-xs text-muted group-hover:text-text transition-colors truncate">
+              <span className="w-56 shrink-0 text-xs text-muted group-hover:text-text transition-colors">
                 {LEVEL_LABEL[level]}
               </span>
               <div className="flex-1 h-2 rounded-full bg-border overflow-hidden">

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import QuantumRiskBadge from './QuantumRiskBadge'
 import ConfidenceBadge from './ConfidenceBadge'
+import RemediationChecklist from './RemediationChecklist'
 import {
   ASSET_TYPE_ORDER,
   ASSET_TYPE_LABEL,
@@ -11,11 +12,12 @@ import {
   formatPrimitiveLabel,
   formatSourceLabel,
 } from '../utils/cbomTransform'
-import { getRemediationAdvice, getSynthesizedCodeSnippet } from '../utils/cbomRemediation'
+import { getRemediationAdvice, getSynthesizedCodeSnippet, generateRemediationChecklist } from '../utils/cbomRemediation'
 
 const CONFIDENCE_RANK = { 'very-high': 0, high: 1, medium: 2, low: 3 }
 
 export default function CbomAssetTable({ assets, repoUrl, onOpenGuide }) {
+  const [viewMode, setViewMode] = useState('table') // 'table' | 'checklist'
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('quantum')
   const [sortDir, setSortDir] = useState('asc')
@@ -24,6 +26,8 @@ export default function CbomAssetTable({ assets, repoUrl, onOpenGuide }) {
   const [quantumFilter, setQuantumFilter] = useState('all')
   const [onlyReview, setOnlyReview] = useState(false)
   const [expanded, setExpanded] = useState(() => new Set())
+
+  const tasks = useMemo(() => generateRemediationChecklist(assets), [assets])
 
   const filtered = useMemo(() => {
     let list = assets
@@ -85,108 +89,153 @@ export default function CbomAssetTable({ assets, repoUrl, onOpenGuide }) {
   return (
     <div className="w-full animate-fade-in">
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or file path…"
-            className="flex-1 bg-surface border border-border rounded-lg px-4 py-2.5 text-sm font-mono placeholder:text-dim focus:border-accent focus:ring-1 focus:ring-accent"
-          />
-          <span className="self-center text-xs text-dim whitespace-nowrap">
-            {filtered.length} of {assets.length} shown
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
-          >
-            <option value="all">All asset types</option>
-            {ASSET_TYPE_ORDER.map((t) => (
-              <option key={t} value={t}>{ASSET_TYPE_LABEL[t]}</option>
-            ))}
-          </select>
-
-          <select
-            value={quantumFilter}
-            onChange={(e) => setQuantumFilter(e.target.value)}
-            className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
-          >
-            <option value="all">All quantum levels</option>
-            {QUANTUM_LEVELS.map((l) => (
-              <option key={l} value={l}>Level {l}</option>
-            ))}
-          </select>
-
-          <select
-            value={confidenceFilter}
-            onChange={(e) => setConfidenceFilter(e.target.value)}
-            className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
-          >
-            <option value="all">All confidence</option>
-            {CONFIDENCE_ORDER.map((c) => (
-              <option key={c} value={c}>{CONFIDENCE_LABEL[c]}</option>
-            ))}
-          </select>
-
-          <button
-            onClick={() => setOnlyReview((v) => !v)}
-            className={`rounded-md px-3 py-1.5 text-xs border transition-colors ${
-              onlyReview
-                ? 'bg-high/15 border-high/30 text-high'
-                : 'bg-surface border-border text-muted hover:border-borderLight'
-            }`}
-          >
-            Needs review
-          </button>
-
-          {activeFilterCount > 0 && (
+        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+          {/* Sleek Pill Toggle: [All Assets (37)] [Remediation (2)] */}
+          <div className="flex items-center rounded-lg border border-border bg-surface p-1 shrink-0 self-start sm:self-auto">
             <button
-              onClick={clearFilters}
-              className="text-xs text-dim hover:text-muted underline underline-offset-2"
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                viewMode === 'table'
+                  ? 'bg-raised text-text font-semibold border border-borderLight shadow-sm'
+                  : 'text-muted hover:text-text'
+              }`}
             >
-              Clear filters ({activeFilterCount})
+              All Assets ({assets.length})
             </button>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-4 rounded-lg border border-border overflow-x-auto">
-        <div className="min-w-[880px]">
-          <div className="grid grid-cols-[1.1fr_105px_130px_70px_100px_minmax(190px,1.5fr)_28px] gap-2 px-4 py-2.5 bg-raised border-b border-border text-xs text-dim uppercase tracking-wide">
-            <SortHeader label="Name" col="name" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-            <SortHeader label="Type" col="type" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-            <span>Primitive</span>
-            <SortHeader label="Risk" col="quantum" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-            <SortHeader label="Confidence" col="confidence" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-            <span>Source (File &amp; Line)</span>
-            <span />
+            <button
+              type="button"
+              onClick={() => setViewMode('checklist')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+                viewMode === 'checklist'
+                  ? 'bg-raised text-text font-semibold border border-borderLight shadow-sm'
+                  : 'text-muted hover:text-text'
+              }`}
+            >
+              <span>Remediation</span>
+              {tasks.length > 0 && (
+                <span className="px-1.5 py-0.2 text-[10px] font-mono font-semibold rounded-full bg-critical/20 text-critical border border-critical/30">
+                  {tasks.length}
+                </span>
+              )}
+            </button>
           </div>
 
-          {filtered.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-dim">
-              No crypto assets match the current filters.
-            </div>
-          ) : (
-            <div className="divide-y divide-border">
-              {filtered.map((a) => (
-                <AssetRow
-                  key={a.bomRef}
-                  asset={a}
-                  isExpanded={expanded.has(a.bomRef)}
-                  onToggle={() => toggleExpanded(a.bomRef)}
-                  repoUrl={repoUrl}
-                  onOpenGuide={onOpenGuide}
-                />
-              ))}
-            </div>
+          {viewMode === 'table' && (
+            <>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name or file path…"
+                className="flex-1 bg-surface border border-border rounded-lg px-4 py-2 text-sm font-mono placeholder:text-dim focus:border-accent focus:ring-1 focus:ring-accent"
+              />
+              <span className="self-center text-xs text-dim whitespace-nowrap hidden sm:inline">
+                {filtered.length} of {assets.length} shown
+              </span>
+            </>
           )}
         </div>
+
+        {viewMode === 'table' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
+            >
+              <option value="all">All asset types</option>
+              {ASSET_TYPE_ORDER.map((t) => (
+                <option key={t} value={t}>{ASSET_TYPE_LABEL[t]}</option>
+              ))}
+            </select>
+
+            <select
+              value={quantumFilter}
+              onChange={(e) => setQuantumFilter(e.target.value)}
+              className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
+            >
+              <option value="all">All quantum levels</option>
+              {QUANTUM_LEVELS.map((l) => (
+                <option key={l} value={l}>Level {l}</option>
+              ))}
+            </select>
+
+            <select
+              value={confidenceFilter}
+              onChange={(e) => setConfidenceFilter(e.target.value)}
+              className="bg-surface border border-border rounded-md px-3 py-1.5 text-xs text-muted focus:border-accent"
+            >
+              <option value="all">All confidence</option>
+              {CONFIDENCE_ORDER.map((c) => (
+                <option key={c} value={c}>{CONFIDENCE_LABEL[c]}</option>
+              ))}
+            </select>
+
+            <button
+              onClick={() => setOnlyReview((v) => !v)}
+              className={`rounded-md px-3 py-1.5 text-xs border transition-colors ${
+                onlyReview
+                  ? 'bg-high/15 border-high/30 text-high'
+                  : 'bg-surface border-border text-muted hover:border-borderLight'
+              }`}
+            >
+              Needs review
+            </button>
+
+            {activeFilterCount > 0 && (
+              <button
+                onClick={clearFilters}
+                className="text-xs text-dim hover:text-muted underline underline-offset-2"
+              >
+                Clear filters ({activeFilterCount})
+              </button>
+            )}
+          </div>
+        )}
       </div>
-      <p className="mt-1.5 text-[11px] text-dim sm:hidden">Scroll horizontally to see all columns →</p>
+
+      {viewMode === 'table' ? (
+        <>
+          <div className="mt-4 rounded-lg border border-border overflow-x-auto">
+            <div className="min-w-[880px]">
+              <div className="grid grid-cols-[1.1fr_105px_130px_70px_100px_minmax(190px,1.5fr)_28px] gap-2 px-4 py-2.5 bg-raised border-b border-border text-xs text-dim uppercase tracking-wide">
+                <SortHeader label="Name" col="name" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
+                <SortHeader label="Type" col="type" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
+                <span>Primitive</span>
+                <SortHeader label="Risk" col="quantum" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
+                <SortHeader label="Confidence" col="confidence" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
+                <span>Source (File &amp; Line)</span>
+                <span />
+              </div>
+
+              {filtered.length === 0 ? (
+                <div className="px-4 py-10 text-center text-sm text-dim">
+                  No crypto assets match the current filters.
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {filtered.map((a) => (
+                    <AssetRow
+                      key={a.bomRef}
+                      asset={a}
+                      isExpanded={expanded.has(a.bomRef)}
+                      onToggle={() => toggleExpanded(a.bomRef)}
+                      repoUrl={repoUrl}
+                      onOpenGuide={onOpenGuide}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <p className="mt-1.5 text-[11px] text-dim sm:hidden">Scroll horizontally to see all columns →</p>
+        </>
+      ) : (
+        <div className="mt-4">
+          <RemediationChecklist assets={assets} repoUrl={repoUrl} />
+        </div>
+      )}
     </div>
   )
 }
