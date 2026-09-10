@@ -39,14 +39,14 @@ body {
 }
 
 @keyframes scan-sweep {
-  0% { transform: translateY(-100%); opacity: 0; }
+  0% { top: 0%; opacity: 0; }
   10% { opacity: 1; }
   90% { opacity: 1; }
-  100% { transform: translateY(2400%); opacity: 0; }
+  100% { top: 100%; opacity: 0; }
 }
 
 .animate-scan-sweep {
-  animation: scan-sweep 2.4s ease-in-out infinite;
+  animation: scan-sweep 2.6s ease-in-out infinite;
 }
 
 @keyframes pulse-dot {

@@ -1,4 +1,5 @@
 import { formatAnomalyTypeLabel } from '../utils/transform'
+import { downloadSbomJson } from '../utils/sbomExport'
 
 const CARDS = [
   { key: 'totalComponents', label: 'Components', color: 'text-text' },
@@ -11,17 +12,25 @@ const CARDS = [
 
 const TYPE_BAR_COLOR = 'bg-accent'
 
-export default function RiskSummary({ riskSummary, typeBreakdown, repoUrl }) {
+export default function RiskSummary({ riskSummary, typeBreakdown, repoUrl, sbom }) {
   const typeEntries = Object.entries(typeBreakdown).sort((a, b) => b[1] - a[1])
   const maxTypeCount = Math.max(1, ...typeEntries.map(([, count]) => count))
 
   return (
     <div className="w-full animate-fade-in">
-      <div className="flex items-baseline justify-between mb-4">
+      <div className="flex items-start justify-between mb-4">
         <div>
           <h2 className="text-lg font-semibold text-text">Risk summary</h2>
           <p className="text-xs text-dim font-mono mt-0.5 truncate max-w-md">{repoUrl}</p>
         </div>
+        {sbom && (
+          <button
+            onClick={() => downloadSbomJson(sbom, repoUrl)}
+            className="text-xs text-muted hover:text-text border border-border rounded-md px-3 py-1.5 transition-colors whitespace-nowrap"
+          >
+            Export SBOM (JSON)
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

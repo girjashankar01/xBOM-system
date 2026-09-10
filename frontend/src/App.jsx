@@ -58,7 +58,7 @@ export default function App() {
       <header className="border-b border-border">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <button onClick={handleNewScan} className="flex items-center gap-2">
-            <span className="font-mono text-sm text-accent">sbom://</span>
+            <span className="font-mono text-sm text-accent">xBOM://</span>
             <span className="font-mono text-sm text-dim">scan</span>
           </button>
           {status === 'results' && (
@@ -75,13 +75,13 @@ export default function App() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10 flex flex-col gap-8">
         {status !== 'results' && (
           <div className="flex flex-col items-start gap-2 mt-6">
-            <h1 className="text-3xl sm:text-4xl font-semibold text-text tracking-tight">
-              Know what's really in your dependency tree.
+            <h1 className="text-2xl sm:text-3xl font-semibold text-text tracking-tight">
+              Know what's in your software &amp; cryptography.
             </h1>
-            <p className="text-muted max-w-xl">
-              Point this at a public npm/Node.js repo. It clones it, resolves every transitive
-              dependency from the lockfile, checks it against known vulnerabilities, and flags
-              typosquats, install scripts, loose version pins, and license risk.
+            <p className="text-muted max-w-xl text-sm sm:text-base">
+              Point this at a public npm/Node.js repo to generate a unified Software &amp; Cryptography
+              Bill of Materials (xBOM) — auditing dependency vulnerabilities, cryptographic primitives,
+              keys, and quantum readiness.
             </p>
           </div>
         )}
@@ -119,6 +119,7 @@ export default function App() {
                   riskSummary={sbom.riskSummary}
                   typeBreakdown={typeBreakdown}
                   repoUrl={repoUrl}
+                  sbom={sbom}
                 />
                 <ComponentTable components={enrichedComponents} />
               </div>
