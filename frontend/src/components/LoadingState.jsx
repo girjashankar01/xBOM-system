@@ -22,12 +22,12 @@ const SBOM_ROWS = [
 ]
 
 const CBOM_ROWS = [
-  { icon: '🔑', label: 'AES-256-GCM', tag: 'CIPHER', statusColor: 'bg-safe' },
-  { icon: '🔒', label: 'RSA-2048', tag: 'ASYMMETRIC', statusColor: 'bg-critical' },
-  { icon: '🛡️', label: 'SHA-256', tag: 'HASH', statusColor: 'bg-safe' },
-  { icon: '📜', label: 'X.509 Certificate', tag: 'CERT', statusColor: 'bg-medium' },
-  { icon: '⚛️', label: 'ML-KEM / Kyber', tag: 'PQC', statusColor: 'bg-safe' },
-  { icon: '🔐', label: 'ECDSA P-256', tag: 'SIGNATURE', statusColor: 'bg-high' },
+  { label: 'AES-256-GCM', tag: 'CIPHER', statusColor: 'bg-safe' },
+  { label: 'RSA-2048', tag: 'ASYMMETRIC', statusColor: 'bg-critical' },
+  { label: 'SHA-256', tag: 'HASH', statusColor: 'bg-safe' },
+  { label: 'X.509 Certificate', tag: 'CERT', statusColor: 'bg-medium' },
+  { label: 'ML-KEM / Kyber', tag: 'PQC', statusColor: 'bg-safe' },
+  { label: 'ECDSA P-256', tag: 'SIGNATURE', statusColor: 'bg-high' },
 ]
 
 export default function LoadingState() {
@@ -98,7 +98,7 @@ export default function LoadingState() {
             {CBOM_ROWS.map((row, i) => (
               <div key={i} className="flex items-center justify-between px-3.5 py-2.5">
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <span className="text-[11px] select-none shrink-0 opacity-80">{row.icon}</span>
+                  <div className="h-1.5 w-1.5 rounded-full bg-dim/60 shrink-0" />
                   <span className="font-mono text-[11px] text-muted truncate">
                     {row.label}
                   </span>
