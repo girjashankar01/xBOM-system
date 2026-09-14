@@ -1,4 +1,4 @@
-# SIH260077 — Next-Gen SBOM & CBOM Cryptographic Security Platform
+# xBOM — Next-Gen SBOM & CBOM Cryptographic Security Platform
 
 An end-to-end Software Bill of Materials (**SBOM**) and Cryptography Bill of Materials (**CBOM**) analysis engine. It ingests any public Git repository, inspects software dependencies, enriches vulnerability feeds, statically traverses ASTs to detect code-level cryptographic primitives, attributes packages to crypto capabilities, scores multi-dimensional post-quantum and secret-exposure risk, verifies ambiguous sites via local in-process vector embeddings + offline LLM verification, and delivers a unified, interactive CycloneDX v1.7 dashboard.
 
